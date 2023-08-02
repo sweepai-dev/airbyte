@@ -1,34 +1,19 @@
 /*
- * MIT License
- *
- * Copyright (c) 2020 Airbyte
- *
- * Permission is hereby granted, free of charge, to any person obtaining a copy
- * of this software and associated documentation files (the "Software"), to deal
- * in the Software without restriction, including without limitation the rights
- * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
- * copies of the Software, and to permit persons to whom the Software is
- * furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice shall be included in all
- * copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
- * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
- * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
- * SOFTWARE.
+ * Copyright (c) 2023 Airbyte, Inc., all rights reserved.
  */
 
 package io.airbyte.commons.util;
 
 import com.google.common.base.Preconditions;
 import com.google.common.collect.AbstractIterator;
+import io.airbyte.commons.stream.AirbyteStreamStatusHolder;
+import io.airbyte.protocol.models.AirbyteStreamNameNamespacePair;
+import io.airbyte.protocol.models.v0.AirbyteStreamStatusTraceMessage.AirbyteStreamStatus;
 import java.util.ArrayList;
 import java.util.Iterator;
 import java.util.List;
+import java.util.Optional;
+import java.util.function.Consumer;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -52,20 +37,24 @@ import org.slf4j.LoggerFactory;
  *
  * @param <T> type
  */
-public final class CompositeIterator<T> extends AbstractIterator<T> implements AutoCloseableIterator<T> {
+public final class CompositeIterator<T> extends AbstractIterator<T> implements AutoCloseableIterator<T>, AirbyteStreamAware {
 
   private static final Logger LOGGER = LoggerFactory.getLogger(CompositeIterator.class);
 
+  private final Optional<Consumer<AirbyteStreamStatusHolder>> airbyteStreamStatusConsumer;
   private final List<AutoCloseableIterator<T>> iterators;
 
   private int i;
+  private boolean firstRead;
   private boolean hasClosed;
 
-  CompositeIterator(List<AutoCloseableIterator<T>> iterators) {
+  CompositeIterator(final List<AutoCloseableIterator<T>> iterators, final Consumer<AirbyteStreamStatusHolder> airbyteStreamStatusConsumer) {
     Preconditions.checkNotNull(iterators);
 
+    this.airbyteStreamStatusConsumer = Optional.ofNullable(airbyteStreamStatusConsumer);
     this.iterators = iterators;
     this.i = 0;
+    this.firstRead = true;
     this.hasClosed = false;
   }
 
@@ -83,22 +72,43 @@ public final class CompositeIterator<T> extends AbstractIterator<T> implements A
     while (!currentIterator().hasNext()) {
       try {
         currentIterator().close();
-      } catch (Exception e) {
+        emitCompleteStreamStatus(getAirbyteStream());
+      } catch (final Exception e) {
+        emitIncompleteStreamStatus(getAirbyteStream());
         throw new RuntimeException(e);
       }
 
       if (i + 1 < iterators.size()) {
         i++;
+        emitStartStreamStatus(getAirbyteStream());
+        firstRead = true;
       } else {
         return endOfData();
       }
     }
 
-    return currentIterator().next();
+    try {
+      if (isFirstStream()) {
+        emitStartStreamStatus(getAirbyteStream());
+      }
+      return currentIterator().next();
+    } catch (final RuntimeException e) {
+      emitIncompleteStreamStatus(getAirbyteStream());
+      throw e;
+    } finally {
+      if (firstRead) {
+        emitRunningStreamStatus(getAirbyteStream());
+        firstRead = false;
+      }
+    }
   }
 
   private AutoCloseableIterator<T> currentIterator() {
     return iterators.get(i);
+  }
+
+  private boolean isFirstStream() {
+    return i == 0 && firstRead;
   }
 
   @Override
@@ -106,10 +116,10 @@ public final class CompositeIterator<T> extends AbstractIterator<T> implements A
     hasClosed = true;
 
     final List<Exception> exceptions = new ArrayList<>();
-    for (AutoCloseableIterator<T> iterator : iterators) {
+    for (final AutoCloseableIterator<T> iterator : iterators) {
       try {
         iterator.close();
-      } catch (Exception e) {
+      } catch (final Exception e) {
         LOGGER.error("exception while closing", e);
         exceptions.add(e);
       }
@@ -120,8 +130,50 @@ public final class CompositeIterator<T> extends AbstractIterator<T> implements A
     }
   }
 
+  @Override
+  public Optional<AirbyteStreamNameNamespacePair> getAirbyteStream() {
+    if (currentIterator() instanceof AirbyteStreamAware) {
+      return AirbyteStreamAware.class.cast(currentIterator()).getAirbyteStream();
+    } else {
+      return Optional.empty();
+    }
+  }
+
   private void assertHasNotClosed() {
     Preconditions.checkState(!hasClosed);
+  }
+
+  private void emitRunningStreamStatus(final Optional<AirbyteStreamNameNamespacePair> airbyteStream) {
+    airbyteStream.ifPresent(s -> {
+      LOGGER.info("RUNNING -> {}", s);
+      emitStreamStatus(s, AirbyteStreamStatus.RUNNING);
+    });
+  }
+
+  private void emitStartStreamStatus(final Optional<AirbyteStreamNameNamespacePair> airbyteStream) {
+    airbyteStream.ifPresent(s -> {
+      LOGGER.info("STARTING -> {}", s);
+      emitStreamStatus(s, AirbyteStreamStatus.STARTED);
+    });
+  }
+
+  private void emitCompleteStreamStatus(final Optional<AirbyteStreamNameNamespacePair> airbyteStream) {
+    airbyteStream.ifPresent(s -> {
+      LOGGER.info("COMPLETE -> {}", s);
+      emitStreamStatus(s, AirbyteStreamStatus.COMPLETE);
+    });
+  }
+
+  private void emitIncompleteStreamStatus(final Optional<AirbyteStreamNameNamespacePair> airbyteStream) {
+    airbyteStream.ifPresent(s -> {
+      LOGGER.info("COMPLETE -> {}", s);
+      emitStreamStatus(s, AirbyteStreamStatus.INCOMPLETE);
+    });
+  }
+
+  private void emitStreamStatus(final AirbyteStreamNameNamespacePair airbyteStreamNameNamespacePair,
+                                final AirbyteStreamStatus airbyteStreamStatus) {
+    airbyteStreamStatusConsumer.ifPresent(c -> c.accept(new AirbyteStreamStatusHolder(airbyteStreamNameNamespacePair, airbyteStreamStatus)));
   }
 
 }

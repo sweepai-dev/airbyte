@@ -1,31 +1,75 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
-  "type": "object",
+  "type": ["null", "object"],
   "properties": {
     "id": {
-      "type": "integer"
+      "type": ["null", "integer"]
+    },
+    "uid": {
+      "type": ["null", "string"]
+    },
+    "teamId": {
+      "type": ["null", "integer"]
     },
     "portalId": {
-      "type": "integer"
+      "type": ["null", "integer"]
+    },
+    "queueMembershipIds": {
+      "type": ["null", "array"]
+    },
+    "scheduledTasks": {
+      "type": ["null", "array"]
     },
     "active": {
-      "type": "boolean"
+      "type": ["null", "boolean"]
     },
     "createdAt": {
-      "type": "integer"
+      "type": ["null", "integer"]
+    },
+    "createdBy": {
+      "type": ["null", "integer"]
+    },
+    "modifiedBy": {
+      "type": ["null", "integer"]
     },
     "lastUpdated": {
-      "type": "integer"
+      "type": ["null", "integer"]
     },
     "ownerId": {
-      "type": "integer"
+      "type": ["null", "integer"]
     },
     "type": {
-      "type": "string"
+      "type": ["null", "string"]
     },
     "timestamp": {
-      "type": ["null", "string"],
-      "format": "date-time"
+      "type": ["null", "integer"]
+    },
+    "bodyPreview": {
+      "type": ["null", "string"]
+    },
+    "bodyPreviewHtml": {
+      "type": ["null", "string"]
+    },
+    "bodyPreviewIsTruncated": {
+      "type": ["null", "boolean"]
+    },
+    "allAccessibleTeamIds": {
+      "type": ["null", "array"],
+      "items": {
+        "type": ["null", "integer"]
+      }
+    },
+    "activityType": {
+      "type": ["null", "string"]
+    },
+    "gdprDeleted": {
+      "type": ["null", "boolean"]
+    },
+    "source": {
+      "type": ["null", "string"]
+    },
+    "sourceId": {
+      "type": ["null", "string"]
     },
     "associations": {
       "type": ["null", "object"],
@@ -33,19 +77,37 @@
         "contactIds": {
           "type": ["null", "array"],
           "items": {
-            "type": "integer"
+            "type": ["null", "integer"]
           }
         },
         "companyIds": {
           "type": ["null", "array"],
           "items": {
-            "type": "integer"
+            "type": ["null", "integer"]
           }
         },
         "dealIds": {
           "type": ["null", "array"],
           "items": {
-            "type": "integer"
+            "type": ["null", "integer"]
+          }
+        },
+        "ownerIds": {
+          "type": ["null", "array"],
+          "items": {
+            "type": ["null", "integer"]
+          }
+        },
+        "workflowIds": {
+          "type": ["null", "array"],
+          "items": {
+            "type": ["null", "integer"]
+          }
+        },
+        "ticketIds": {
+          "type": ["null", "array"],
+          "items": {
+            "type": ["null", "integer"]
           }
         }
       }
@@ -53,10 +115,10 @@
     "attachments": {
       "type": ["null", "array"],
       "items": {
-        "type": "object",
+        "type": ["null", "object"],
         "properties": {
           "id": {
-            "type": "integer"
+            "type": ["null", "integer"]
           }
         }
       }
@@ -71,23 +133,43 @@
           "type": ["null", "object"],
           "properties": {
             "email": {
-              "type": "string"
+              "type": ["null", "string"]
             },
             "firstName": {
-              "type": "string"
+              "type": ["null", "string"]
             },
             "lastName": {
-              "type": "string"
+              "type": ["null", "string"]
+            },
+            "raw": {
+              "type": ["null", "string"]
+            }
+          }
+        },
+        "sender": {
+          "type": ["null", "object"],
+          "properties": {
+            "email": {
+              "type": ["null", "string"]
             }
           }
         },
         "to": {
           "type": ["null", "array"],
           "items": {
-            "type": "object",
+            "type": ["null", "object"],
             "properties": {
               "email": {
-                "type": "string"
+                "type": ["null", "string"]
+              },
+              "firstName": {
+                "type": ["null", "string"]
+              },
+              "lastName": {
+                "type": ["null", "string"]
+              },
+              "raw": {
+                "type": ["null", "string"]
               }
             }
           }
@@ -95,10 +177,19 @@
         "cc": {
           "type": ["null", "array"],
           "items": {
-            "type": "object",
+            "type": ["null", "object"],
             "properties": {
               "email": {
-                "type": "string"
+                "type": ["null", "string"]
+              },
+              "firstName": {
+                "type": ["null", "string"]
+              },
+              "lastName": {
+                "type": ["null", "string"]
+              },
+              "raw": {
+                "type": ["null", "string"]
               }
             }
           }
@@ -106,10 +197,10 @@
         "bcc": {
           "type": ["null", "array"],
           "items": {
-            "type": "object",
+            "type": ["null", "object"],
             "properties": {
               "email": {
-                "type": "string"
+                "type": ["null", "string"]
               }
             }
           }
@@ -154,11 +245,88 @@
           "type": ["null", "string"]
         },
         "recordingUrl": {
-          "type": ["null", "string"],
-          "format": "uri"
+          "type": ["null", "string"]
         },
         "disposition": {
           "type": ["null", "string"]
+        },
+        "completionDate": {
+          "type": ["null", "integer"]
+        },
+        "taskType": {
+          "type": ["null", "string"]
+        },
+        "reminders": {
+          "type": ["null", "array"],
+          "items": {
+            "type": ["null", "integer"]
+          }
+        },
+        "threadId": {
+          "type": ["null", "string", "integer"]
+        },
+        "messageId": {
+          "type": ["null", "string"]
+        },
+        "loggedFrom": {
+          "type": ["null", "string"]
+        },
+        "attachedVideoOpened": {
+          "type": ["null", "boolean"]
+        },
+        "attachedVideoWatched": {
+          "type": ["null", "boolean"]
+        },
+        "trackerKey": {
+          "type": ["null", "string"]
+        },
+        "sendDefaultReminder": {
+          "type": ["null", "boolean"]
+        },
+        "source": {
+          "type": ["null", "string"]
+        },
+        "unknownVisitorConversation": {
+          "type": ["null", "boolean"]
+        },
+        "facsimileSendId": {
+          "type": ["null", "string"]
+        },
+        "sentVia": {
+          "type": ["null", "string"]
+        },
+        "sequenceStepOrder": {
+          "type": ["null", "integer"]
+        },
+        "externalUrl": {
+          "type": ["null", "string"]
+        },
+        "postSendStatus": {
+          "type": ["null", "string"]
+        },
+        "errorMessage": {
+          "type": ["null", "string"]
+        },
+        "recipientDropReasons": {
+          "type": ["null", "string"]
+        },
+        "calleeObjectId": {
+          "type": ["null", "integer"]
+        },
+        "calleeObjectType": {
+          "type": ["null", "string"]
+        },
+        "mediaProcessingStatus": {
+          "type": ["null", "string"]
+        },
+        "sourceId": {
+          "type": ["null", "string"]
+        },
+        "priority": {
+          "type": ["null", "string"]
+        },
+        "isAllDay": {
+          "type": ["null", "boolean"]
         }
       }
     }

@@ -1,16 +1,16 @@
-FROM airbyte/integration-base-python:0.1.1
+FROM python:3.9-slim
 
 # Bash is installed for more convenient debugging.
 RUN apt-get update && apt-get install -y bash && rm -rf /var/lib/apt/lists/*
 
-ENV CODE_PATH="source_mailchimp"
-ENV AIRBYTE_IMPL_MODULE="source_mailchimp"
-ENV AIRBYTE_IMPL_PATH="SourceMailchimp"
-
 WORKDIR /airbyte/integration_code
-COPY $CODE_PATH ./$CODE_PATH
 COPY setup.py ./
 RUN pip install .
+COPY source_mailchimp ./source_mailchimp
+COPY main.py ./
 
-LABEL io.airbyte.version=0.2.1
+ENV AIRBYTE_ENTRYPOINT "python /airbyte/integration_code/main.py"
+ENTRYPOINT ["python", "/airbyte/integration_code/main.py"]
+
+LABEL io.airbyte.version=0.4.1
 LABEL io.airbyte.name=airbyte/source-mailchimp

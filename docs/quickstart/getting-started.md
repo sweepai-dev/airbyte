@@ -11,7 +11,7 @@ First of all, make sure you have Docker and Docker Compose installed. Then run t
 ```text
 git clone https://github.com/airbytehq/airbyte.git
 cd airbyte
-docker-compose up
+./run-ab-platform.sh
 ```
 
 Once you see an Airbyte banner, the UI is ready to go at [http://localhost:8000/](http://localhost:8000/).
@@ -30,9 +30,11 @@ The source we are creating will pull data from an external API. It will replicat
 
 To set it up, just follow the instructions on the screenshot below.
 
-{% hint style="info" %}
+:::info
+
 You might have to wait ~30 seconds before the fields show up because it is the first time you're using Airbyte.
-{% endhint %}
+
+:::
 
 ![](../.gitbook/assets/demo_source.png)
 
@@ -42,11 +44,19 @@ The destination we are creating is a simple JSON line file, meaning that it will
 
 The resulting files will be located in `/tmp/airbyte_local/json_data`
 
+:::caution
+
+Please make sure that Docker Desktop has access to `/tmp` (and `/private` on a MacOS, as /tmp has a symlink that points to /private. It will not work otherwise). You allow it with "File sharing" in `Settings -> Resources -> File sharing -> add the one or two above folder` and hit the "Apply & restart" button.
+
+:::
+
 To set it up, just follow the instructions on the screenshot below.
 
-{% hint style="info" %}
+:::info
+
 You might have to wait ~30 seconds before the fields show up because it is the first time you're using Airbyte.
-{% endhint %}
+
+:::
 
 ![](../.gitbook/assets/demo_destination.png)
 

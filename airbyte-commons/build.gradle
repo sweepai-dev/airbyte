@@ -3,7 +3,11 @@ plugins {
 }
 
 dependencies {
-    testImplementation 'org.apache.commons:commons-lang3:3.11'
+    // Dependencies for this module should be specified in the top-level build.gradle. See readme for more explanation.
+    implementation libs.airbyte.protocol
 
-    implementation group: 'org.apache.commons', name: 'commons-compress', version: '1.20'
+    // this dependency is an exception to the above rule because it is only used INTERNALLY to the commons library.
+    implementation 'com.jayway.jsonpath:json-path:2.7.0'
 }
+
+Task publishArtifactsTask = getPublishArtifactsTask("$rootProject.ext.version", project)

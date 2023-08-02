@@ -1,7 +1,5 @@
 *
 !Dockerfile
-!Dockerfile.test
-!google_sheets_source
+!main.py
+!source_google_sheets
 !setup.py
-!integration_tests
-!secrets

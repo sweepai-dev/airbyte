@@ -1,4 +1,2 @@
--e ../../bases/airbyte-protocol
--e ../../bases/base-python
--e ../../bases/base-python-test
+-e ../../bases/connector-acceptance-test
 -e .

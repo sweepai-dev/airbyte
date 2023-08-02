@@ -1,49 +1,33 @@
 /*
- * MIT License
- *
- * Copyright (c) 2020 Airbyte
- *
- * Permission is hereby granted, free of charge, to any person obtaining a copy
- * of this software and associated documentation files (the "Software"), to deal
- * in the Software without restriction, including without limitation the rights
- * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
- * copies of the Software, and to permit persons to whom the Software is
- * furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice shall be included in all
- * copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
- * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
- * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
- * SOFTWARE.
+ * Copyright (c) 2023 Airbyte, Inc., all rights reserved.
  */
 
 package io.airbyte.integrations.destination.buffered_stream_consumer;
 
+import com.fasterxml.jackson.databind.JsonNode;
+import com.google.common.annotations.VisibleForTesting;
 import com.google.common.base.Preconditions;
-import io.airbyte.commons.concurrency.VoidCallable;
-import io.airbyte.commons.functional.CheckedConsumer;
+import com.google.common.base.Strings;
 import io.airbyte.commons.functional.CheckedFunction;
 import io.airbyte.commons.json.Jsons;
 import io.airbyte.integrations.base.AirbyteMessageConsumer;
-import io.airbyte.integrations.base.AirbyteStreamNameNamespacePair;
 import io.airbyte.integrations.base.FailureTrackingAirbyteMessageConsumer;
-import io.airbyte.protocol.models.AirbyteMessage;
-import io.airbyte.protocol.models.AirbyteMessage.Type;
-import io.airbyte.protocol.models.AirbyteRecordMessage;
-import io.airbyte.protocol.models.AirbyteStateMessage;
-import io.airbyte.protocol.models.ConfiguredAirbyteCatalog;
-import java.util.ArrayList;
+import io.airbyte.integrations.destination.dest_state_lifecycle_manager.DefaultDestStateLifecycleManager;
+import io.airbyte.integrations.destination.dest_state_lifecycle_manager.DestStateLifecycleManager;
+import io.airbyte.integrations.destination.record_buffer.BufferFlushType;
+import io.airbyte.integrations.destination.record_buffer.BufferingStrategy;
+import io.airbyte.protocol.models.v0.AirbyteMessage;
+import io.airbyte.protocol.models.v0.AirbyteMessage.Type;
+import io.airbyte.protocol.models.v0.AirbyteRecordMessage;
+import io.airbyte.protocol.models.v0.AirbyteStreamNameNamespacePair;
+import io.airbyte.protocol.models.v0.ConfiguredAirbyteCatalog;
+import java.time.Duration;
+import java.time.Instant;
 import java.util.HashMap;
-import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.Set;
 import java.util.function.Consumer;
-import java.util.stream.Collectors;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -67,46 +51,116 @@ import org.slf4j.LoggerFactory;
  * <p>
  * All other message types are ignored.
  * </p>
+ *
+ * <p>
+ * Throughout the lifecycle of the consumer, messages get promoted from buffered to flushed to
+ * committed. A record message when it is received is immediately buffered. When the buffer fills
+ * up, all buffered records are flushed out of memory using the user-provided recordBuffer. When
+ * this flush happens, a state message is moved from pending to flushed. On close, if the
+ * user-provided onClose function is successful, then the flushed state record is considered
+ * committed and is then emitted. We expect this class to only ever emit either 1 state message (in
+ * the case of a full or partial success) or 0 state messages (in the case where the onClose step
+ * was never reached or did not complete without exception).
+ * </p>
+ *
+ * <p>
+ * When a record is "flushed" it is moved from the docker container to the destination. By
+ * convention, it is usually placed in some sort of temporary storage on the destination (e.g. a
+ * temporary database or file store). The logic in close handles committing the temporary
+ * representation data to the final store (e.g. final table). In the case of staging destinations
+ * they often have additional temporary stores. The common pattern for staging destination is that
+ * flush pushes the data into a staging area in cloud storage and then close copies from staging to
+ * a temporary table AND then copies from the temporary table into the final table. This abstraction
+ * is blind to the detail of how staging destinations implement their close.
+ * </p>
  */
 public class BufferedStreamConsumer extends FailureTrackingAirbyteMessageConsumer implements AirbyteMessageConsumer {
 
   private static final Logger LOGGER = LoggerFactory.getLogger(BufferedStreamConsumer.class);
-  private static final int BATCH_SIZE = 10000;
 
-  private final VoidCallable onStart;
-  private final RecordWriter recordWriter;
-  private final CheckedConsumer<Boolean, Exception> onClose;
+  private final OnStartFunction onStart;
+  private final OnCloseFunction onClose;
   private final Set<AirbyteStreamNameNamespacePair> streamNames;
-  private final List<AirbyteMessage> buffer;
   private final ConfiguredAirbyteCatalog catalog;
-  private final CheckedFunction<String, Boolean, Exception> isValidRecord;
-  private final Map<AirbyteStreamNameNamespacePair, Long> pairToIgnoredRecordCount;
-  private final Consumer<AirbyteStateMessage> checkpointConsumer;
+  private final CheckedFunction<JsonNode, Boolean, Exception> isValidRecord;
+  private final Map<AirbyteStreamNameNamespacePair, Long> streamToIgnoredRecordCount;
+  private final Consumer<AirbyteMessage> outputRecordCollector;
+  private final BufferingStrategy bufferingStrategy;
+  private final DestStateLifecycleManager stateManager;
 
   private boolean hasStarted;
   private boolean hasClosed;
 
-  private AirbyteStateMessage lastCommittedState;
-  private AirbyteStateMessage pendingState;
+  private Instant nextFlushDeadline;
+  private final Duration bufferFlushFrequency;
+  private final String defaultNamespace;
 
-  public BufferedStreamConsumer(Consumer<AirbyteMessage> outputRecordCollector,
-                                VoidCallable onStart,
-                                RecordWriter recordWriter,
-                                CheckedConsumer<Boolean, Exception> onClose,
-                                ConfiguredAirbyteCatalog catalog,
-                                CheckedFunction<String, Boolean, Exception> isValidRecord) {
-    this.checkpointConsumer = (message) -> outputRecordCollector.accept(new AirbyteMessage().withType(Type.STATE).withState(message));
+  /**
+   * Feel free to continue using this in non-1s1t destinations - it may be easier to use. However,
+   * 1s1t destinations should prefer the version which accepts a {@code defaultNamespace}.
+   */
+  @Deprecated
+  public BufferedStreamConsumer(final Consumer<AirbyteMessage> outputRecordCollector,
+                                final OnStartFunction onStart,
+                                final BufferingStrategy bufferingStrategy,
+                                final OnCloseFunction onClose,
+                                final ConfiguredAirbyteCatalog catalog,
+                                final CheckedFunction<JsonNode, Boolean, Exception> isValidRecord) {
+    this(outputRecordCollector,
+        onStart,
+        bufferingStrategy,
+        onClose,
+        catalog,
+        isValidRecord,
+        Duration.ofMinutes(15),
+        // This is purely for backwards compatibility. Many older destinations handle this internally.
+        // Starting with Destinations V2, we recommend passing in an explicit namespace.
+        null);
+  }
+
+  public BufferedStreamConsumer(final Consumer<AirbyteMessage> outputRecordCollector,
+                                final OnStartFunction onStart,
+                                final BufferingStrategy bufferingStrategy,
+                                final OnCloseFunction onClose,
+                                final ConfiguredAirbyteCatalog catalog,
+                                final CheckedFunction<JsonNode, Boolean, Exception> isValidRecord,
+                                final String defaultNamespace) {
+    this(outputRecordCollector,
+        onStart,
+        bufferingStrategy,
+        onClose,
+        catalog,
+        isValidRecord,
+        Duration.ofMinutes(15),
+        defaultNamespace);
+  }
+
+  /*
+   * NOTE: this is only used for testing purposes, future work would be re-visit if #acceptTracked
+   * should take in an Instant parameter which would require refactoring all MessageConsumers
+   */
+  @VisibleForTesting
+  BufferedStreamConsumer(final Consumer<AirbyteMessage> outputRecordCollector,
+                         final OnStartFunction onStart,
+                         final BufferingStrategy bufferingStrategy,
+                         final OnCloseFunction onClose,
+                         final ConfiguredAirbyteCatalog catalog,
+                         final CheckedFunction<JsonNode, Boolean, Exception> isValidRecord,
+                         final Duration flushFrequency,
+                         final String defaultNamespace) {
+    this.outputRecordCollector = outputRecordCollector;
     this.hasStarted = false;
     this.hasClosed = false;
     this.onStart = onStart;
-    this.recordWriter = recordWriter;
     this.onClose = onClose;
     this.catalog = catalog;
     this.streamNames = AirbyteStreamNameNamespacePair.fromConfiguredCatalog(catalog);
     this.isValidRecord = isValidRecord;
-    this.buffer = new ArrayList<>(BATCH_SIZE);
-
-    this.pairToIgnoredRecordCount = new HashMap<>();
+    this.streamToIgnoredRecordCount = new HashMap<>();
+    this.bufferingStrategy = bufferingStrategy;
+    this.stateManager = new DefaultDestStateLifecycleManager();
+    this.bufferFlushFrequency = flushFrequency;
+    this.defaultNamespace = defaultNamespace;
   }
 
   @Override
@@ -114,92 +168,155 @@ public class BufferedStreamConsumer extends FailureTrackingAirbyteMessageConsume
     // todo (cgardens) - if we reuse this pattern, consider moving it into FailureTrackingConsumer.
     Preconditions.checkState(!hasStarted, "Consumer has already been started.");
     hasStarted = true;
-
-    pairToIgnoredRecordCount.clear();
+    nextFlushDeadline = Instant.now().plus(bufferFlushFrequency);
+    streamToIgnoredRecordCount.clear();
     LOGGER.info("{} started.", BufferedStreamConsumer.class);
-
     onStart.call();
   }
 
+  /**
+   * AcceptTracked will still process AirbyteMessages as usual with the addition of periodically
+   * flushing buffer and writing data to destination storage
+   *
+   * @param message {@link AirbyteMessage} to be processed
+   * @throws Exception
+   */
   @Override
-  protected void acceptTracked(AirbyteMessage message) throws Exception {
+  protected void acceptTracked(final AirbyteMessage message) throws Exception {
     Preconditions.checkState(hasStarted, "Cannot accept records until consumer has started");
-
     if (message.getType() == Type.RECORD) {
-      final AirbyteRecordMessage recordMessage = message.getRecord();
-      final AirbyteStreamNameNamespacePair stream = AirbyteStreamNameNamespacePair.fromRecordMessage(recordMessage);
-      final String data = Jsons.serialize(message.getRecord().getData());
+      final AirbyteRecordMessage record = message.getRecord();
+      if (Strings.isNullOrEmpty(record.getNamespace())) {
+        record.setNamespace(defaultNamespace);
+      }
+      final AirbyteStreamNameNamespacePair stream;
+      stream = AirbyteStreamNameNamespacePair.fromRecordMessage(record);
 
+      // if stream is not part of list of streams to sync to then throw invalid stream exception
       if (!streamNames.contains(stream)) {
         throwUnrecognizedStream(catalog, message);
       }
 
-      if (!isValidRecord.apply(data)) {
-        pairToIgnoredRecordCount.put(stream, pairToIgnoredRecordCount.getOrDefault(stream, 0L) + 1L);
+      if (!isValidRecord.apply(record.getData())) {
+        streamToIgnoredRecordCount.put(stream, streamToIgnoredRecordCount.getOrDefault(stream, 0L) + 1L);
         return;
       }
 
-      buffer.add(message);
-
-      if (buffer.size() == BATCH_SIZE) {
-        flushQueueToDestination();
+      final Optional<BufferFlushType> flushType = bufferingStrategy.addRecord(stream, message);
+      // if present means that a flush occurred
+      if (flushType.isPresent()) {
+        if (BufferFlushType.FLUSH_ALL.equals(flushType.get())) {
+          markStatesAsFlushedToDestination();
+        } else if (BufferFlushType.FLUSH_SINGLE_STREAM.equals(flushType.get())) {
+          if (stateManager.supportsPerStreamFlush()) {
+            // per-stream instance can handle flush of just a single stream
+            markStatesAsFlushedToDestination();
+          }
+          /*
+           * We don't mark {@link AirbyteStateMessage} as committed in the case with GLOBAL/LEGACY because
+           * within a single stream being flushed it is not deterministic that all the AirbyteRecordMessages
+           * have been committed
+           */
+        }
       }
     } else if (message.getType() == Type.STATE) {
-      pendingState = message.getState();
+      stateManager.addState(message);
     } else {
       LOGGER.warn("Unexpected message: " + message.getType());
     }
-
+    periodicBufferFlush();
   }
 
-  private void flushQueueToDestination() throws Exception {
-    final Map<AirbyteStreamNameNamespacePair, List<AirbyteRecordMessage>> recordsByStream = buffer.stream()
-        .map(AirbyteMessage::getRecord)
-        .collect(Collectors.groupingBy(AirbyteStreamNameNamespacePair::fromRecordMessage));
+  /**
+   * After marking states as committed, return the state message to platform then clear state messages
+   * to avoid resending the same state message to the platform. Also updates the next time a buffer
+   * flush should occur since it is deterministic that when this method is called all data has been
+   * successfully committed to destination
+   */
+  private void markStatesAsFlushedToDestination() {
+    stateManager.markPendingAsCommitted();
+    stateManager.listCommitted().forEach(outputRecordCollector);
+    stateManager.clearCommitted();
+    nextFlushDeadline = Instant.now().plus(bufferFlushFrequency);
+  }
 
-    buffer.clear();
-
-    for (Map.Entry<AirbyteStreamNameNamespacePair, List<AirbyteRecordMessage>> entry : recordsByStream.entrySet()) {
-      recordWriter.accept(entry.getKey(), entry.getValue());
-    }
-
-    if (pendingState != null) {
-      lastCommittedState = pendingState;
-      pendingState = null;
+  /**
+   * Periodically flushes buffered data to destination storage when exceeding flush deadline. Also
+   * resets the last time a flush occurred
+   */
+  private void periodicBufferFlush() throws Exception {
+    // When the last time the buffered has been flushed exceed the frequency, flush the current
+    // buffer before receiving incoming AirbyteMessage
+    if (Instant.now().isAfter(nextFlushDeadline)) {
+      LOGGER.info("Periodic buffer flush started");
+      try {
+        bufferingStrategy.flushAllBuffers();
+        markStatesAsFlushedToDestination();
+      } catch (final Exception e) {
+        LOGGER.error("Periodic buffer flush failed", e);
+        throw e;
+      }
     }
   }
 
-  private void throwUnrecognizedStream(final ConfiguredAirbyteCatalog catalog, final AirbyteMessage message) {
+  private static void throwUnrecognizedStream(final ConfiguredAirbyteCatalog catalog, final AirbyteMessage message) {
     throw new IllegalArgumentException(
         String.format("Message contained record from a stream that was not in the catalog. \ncatalog: %s , \nmessage: %s",
             Jsons.serialize(catalog), Jsons.serialize(message)));
   }
 
+  /**
+   * Cleans up buffer based on whether the sync was successful or some exception occurred. In the case
+   * where a failure occurred we do a simple clean up any lingering data. Otherwise, flush any
+   * remaining data that has been stored. This is fine even if the state has not been received since
+   * this Airbyte promises at least once delivery
+   *
+   * @param hasFailed true if the stream replication failed partway through, false otherwise
+   * @throws Exception
+   */
   @Override
-  protected void close(boolean hasFailed) throws Exception {
+  protected void close(final boolean hasFailed) throws Exception {
     Preconditions.checkState(hasStarted, "Cannot close; has not started.");
     Preconditions.checkState(!hasClosed, "Has already closed.");
     hasClosed = true;
 
-    pairToIgnoredRecordCount
+    streamToIgnoredRecordCount
         .forEach((pair, count) -> LOGGER.warn("A total of {} record(s) of data from stream {} were invalid and were ignored.", count, pair));
     if (hasFailed) {
       LOGGER.error("executing on failed close procedure.");
     } else {
       LOGGER.info("executing on success close procedure.");
-      flushQueueToDestination();
+      // When flushing the buffer, this will call the respective #flushBufferFunction which bundles
+      // the flush and commit operation, so if successful then mark state as committed
+      bufferingStrategy.flushAllBuffers();
+      markStatesAsFlushedToDestination();
     }
+    bufferingStrategy.close();
 
     try {
-      onClose.accept(hasFailed);
-      // todo (cgardens) - For now we are using this conditional to maintain existing behavior. When we
-      // enable checkpointing, we will need to get feedback from onClose on whether any data was persisted
-      // or not. If it was then, the state message will be emitted.
-      if (!hasFailed && lastCommittedState != null) {
-        checkpointConsumer.accept(lastCommittedState);
+      /*
+       * TODO: (ryankfu) Remove usage of hasFailed with onClose after all destination connectors have been
+       * updated to support checkpointing
+       *
+       * flushed is empty in 2 cases: 1. either it is full refresh (no state is emitted necessarily) 2. it
+       * is stream but no states were flushed in both of these cases, if there was a failure, we should
+       * not bother committing. otherwise attempt to commit
+       */
+      if (stateManager.listFlushed().isEmpty()) {
+        onClose.accept(hasFailed);
+      } else {
+        /*
+         * if any state message was flushed that means we should try to commit what we have. if
+         * hasFailed=false, then it could be full success. if hasFailed=true, then going for partial
+         * success.
+         */
+        onClose.accept(false);
       }
-    } catch (Exception e) {
-      LOGGER.error("on close failed.");
+
+      stateManager.listCommitted().forEach(outputRecordCollector);
+    } catch (final Exception e) {
+      LOGGER.error("Close failed.", e);
+      throw e;
     }
   }
 

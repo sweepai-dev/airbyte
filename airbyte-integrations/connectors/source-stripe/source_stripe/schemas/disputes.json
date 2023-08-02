@@ -120,8 +120,7 @@
       "type": ["null", "object"],
       "properties": {
         "due_by": {
-          "type": ["null", "string"],
-          "format": "date-time"
+          "type": ["null", "number"]
         },
         "has_evidence": {
           "type": ["null", "boolean"]
@@ -150,9 +149,11 @@
     "status": {
       "type": ["null", "string"]
     },
-    "updated": {
-      "type": ["null", "string"],
-      "format": "date-time"
+    "payment_intent": {
+      "type": ["null", "string"]
+    },
+    "balance_transaction": {
+      "type": ["null", "string"]
     }
   }
 }

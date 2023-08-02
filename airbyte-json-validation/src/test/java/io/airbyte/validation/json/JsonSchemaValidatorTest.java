@@ -1,30 +1,11 @@
 /*
- * MIT License
- *
- * Copyright (c) 2020 Airbyte
- *
- * Permission is hereby granted, free of charge, to any person obtaining a copy
- * of this software and associated documentation files (the "Software"), to deal
- * in the Software without restriction, including without limitation the rights
- * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
- * copies of the Software, and to permit persons to whom the Software is
- * furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice shall be included in all
- * copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
- * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
- * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
- * SOFTWARE.
+ * Copyright (c) 2023 Airbyte, Inc., all rights reserved.
  */
 
 package io.airbyte.validation.json;
 
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
@@ -35,10 +16,15 @@ import io.airbyte.commons.io.IOs;
 import io.airbyte.commons.json.Jsons;
 import java.io.File;
 import java.io.IOException;
+import java.net.URI;
+import java.net.URISyntaxException;
 import java.nio.file.Files;
+import java.util.Set;
 import org.junit.jupiter.api.Test;
 
 class JsonSchemaValidatorTest {
+
+  private static final String PROPERTIES = "properties";
 
   private static final JsonNode VALID_SCHEMA = Jsons.deserialize(
       "{\n" +
@@ -63,11 +49,11 @@ class JsonSchemaValidatorTest {
   void testValidateSuccess() {
     final JsonSchemaValidator validator = new JsonSchemaValidator();
 
-    JsonNode object1 = Jsons.deserialize("{\"host\":\"abc\"}");
+    final JsonNode object1 = Jsons.deserialize("{\"host\":\"abc\"}");
     assertTrue(validator.validate(VALID_SCHEMA, object1).isEmpty());
     assertDoesNotThrow(() -> validator.ensure(VALID_SCHEMA, object1));
 
-    JsonNode object2 = Jsons.deserialize("{\"host\":\"abc\", \"port\":1}");
+    final JsonNode object2 = Jsons.deserialize("{\"host\":\"abc\", \"port\":1}");
     assertTrue(validator.validate(VALID_SCHEMA, object2).isEmpty());
     assertDoesNotThrow(() -> validator.ensure(VALID_SCHEMA, object2));
   }
@@ -76,11 +62,11 @@ class JsonSchemaValidatorTest {
   void testValidateFail() {
     final JsonSchemaValidator validator = new JsonSchemaValidator();
 
-    JsonNode object1 = Jsons.deserialize("{}");
+    final JsonNode object1 = Jsons.deserialize("{}");
     assertFalse(validator.validate(VALID_SCHEMA, object1).isEmpty());
     assertThrows(JsonValidationException.class, () -> validator.ensure(VALID_SCHEMA, object1));
 
-    JsonNode object2 = Jsons.deserialize("{\"host\":\"abc\", \"port\":9999999}");
+    final JsonNode object2 = Jsons.deserialize("{\"host\":\"abc\", \"port\":9999999}");
     assertFalse(validator.validate(VALID_SCHEMA, object2).isEmpty());
     assertThrows(JsonValidationException.class, () -> validator.ensure(VALID_SCHEMA, object2));
   }
@@ -111,13 +97,71 @@ class JsonSchemaValidatorTest {
     final File schemaFile = IOs.writeFile(Files.createTempDirectory("test"), "schema.json", schema).toFile();
 
     // outer object
-    assertTrue(JsonSchemaValidator.getSchema(schemaFile).get("properties").has("field1"));
-    assertFalse(JsonSchemaValidator.getSchema(schemaFile).get("properties").has("field2"));
+    assertTrue(JsonSchemaValidator.getSchema(schemaFile).get(PROPERTIES).has("field1"));
+    assertFalse(JsonSchemaValidator.getSchema(schemaFile).get(PROPERTIES).has("field2"));
     // inner object
-    assertTrue(JsonSchemaValidator.getSchema(schemaFile, "InnerObject").get("properties").has("field2"));
-    assertFalse(JsonSchemaValidator.getSchema(schemaFile, "InnerObject").get("properties").has("field1"));
+    assertTrue(JsonSchemaValidator.getSchema(schemaFile, "InnerObject").get(PROPERTIES).has("field2"));
+    assertFalse(JsonSchemaValidator.getSchema(schemaFile, "InnerObject").get(PROPERTIES).has("field1"));
     // non-existent object
     assertNull(JsonSchemaValidator.getSchema(schemaFile, "NonExistentObject"));
+  }
+
+  @Test
+  void testResolveReferences() throws IOException, URISyntaxException {
+    String referencableSchemas = """
+                                 {
+                                   "definitions": {
+                                     "ref1": {"type": "string"},
+                                     "ref2": {"type": "boolean"}
+                                   }
+                                 }
+                                 """;
+    final File schemaFile = IOs.writeFile(Files.createTempDirectory("test"), "WellKnownTypes.json", referencableSchemas).toFile();
+    JsonSchemaValidator jsonSchemaValidator =
+        new JsonSchemaValidator(new URI("file://" + schemaFile.getParentFile().getAbsolutePath() + "/foo.json"));
+
+    Set<String> validationResult = jsonSchemaValidator.validate(
+        Jsons.deserialize("""
+                          {
+                            "type": "object",
+                            "properties": {
+                              "prop1": {"$ref": "WellKnownTypes.json#/definitions/ref1"},
+                              "prop2": {"$ref": "WellKnownTypes.json#/definitions/ref2"}
+                            }
+                          }
+                          """),
+        Jsons.deserialize("""
+                          {
+                            "prop1": "foo",
+                            "prop2": "false"
+                          }
+                          """));
+
+    assertEquals(Set.of("$.prop2: string found, boolean expected"), validationResult);
+  }
+
+  @Test
+  void testIntializedMethodsShouldErrorIfNotInitialised() {
+    final var validator = new JsonSchemaValidator();
+
+    assertThrows(NullPointerException.class, () -> validator.testInitializedSchema("uninitialised", Jsons.deserialize("{}")));
+    assertThrows(NullPointerException.class, () -> validator.ensureInitializedSchema("uninitialised", Jsons.deserialize("{}")));
+  }
+
+  @Test
+  void testIntializedMethodsShouldValidateIfInitialised() {
+    final JsonSchemaValidator validator = new JsonSchemaValidator();
+    final var schemaName = "schema_name";
+    final JsonNode goodJson = Jsons.deserialize("{\"host\":\"abc\"}");
+
+    validator.initializeSchemaValidator(schemaName, VALID_SCHEMA);
+
+    assertTrue(validator.testInitializedSchema(schemaName, goodJson));
+    assertDoesNotThrow(() -> validator.ensureInitializedSchema(schemaName, goodJson));
+
+    final JsonNode badJson = Jsons.deserialize("{\"host\":1}");
+    assertFalse(validator.testInitializedSchema(schemaName, badJson));
+    assertThrows(JsonValidationException.class, () -> validator.ensureInitializedSchema(schemaName, badJson));
   }
 
 }

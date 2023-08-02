@@ -1,139 +1,277 @@
-# On Kubernetes \(Alpha\)
+# (Deprecated) Deploy Airbyte on Kubernetes using Kustomize
 
-> :warning: **Alpha Preview**: This is an early preview of Kubernetes that is pinned to Airbyte version 0.16.1. We do not recommend this preview for production use.
+:::caution
+This deployment method uses Kustomize and is only supported up to [Airbyte version `0.40.32`](https://github.com/airbytehq/airbyte/releases/tag/v0.40.32). For existing deployments, check out [commit `21a7e102183e20d2d4998ea70c2a8fe4eac8921b`](https://github.com/airbytehq/airbyte/commit/21a7e102183e20d2d4998ea70c2a8fe4eac8921b) to continue deploying using Kustomize. For new deployments, [deploy Airbyte on Kubernetes via Helm](https://docs.airbyte.com/deploying-airbyte/on-kubernetes-via-helm).
+:::
 
-## Support
+This page guides you through deploying Airbyte Open Source on Kubernetes. 
 
-This is an early preview of Kubernetes support. It has been tested on:
 
-* Local single-node Kube clusters \(docker-desktop for Mac\)
-* Google Kubernetes Engine \(GKE\)
-* Amazon Elastic Kubernetes Service \(EKS\)
+## Requirements
 
-Please let us know on [Slack](https://slack.airbyte.io) or with a Github Issue if you're having trouble running it on these or other platforms. We'll be glad to help you get it running.
+To test locally, you can use one of the following:
 
-## Launching
+* [Docker Desktop](https://docs.docker.com/desktop/) with [Kubernetes](https://docs.docker.com/desktop/kubernetes/#enable-kubernetes) enabled
+* [Minikube](https://docs.docker.com/desktop/kubernetes/#enable-kubernetes) with at least 4GB RAM
+* [Kind](https://kind.sigs.k8s.io/docs/user/quick-start/)
 
-All commands should be run from the root Airbyte source directory.
 
-1. Make sure you are using the correct Kubernetes context with `kubectl config current-context`
-2. Apply the manifests for one of:
-   * Latest stable version
-     1. Apply with `kubectl apply -k kube/overlays/stable`
-3. Wait for pods to be "Running" on `kubectl get pods | grep airbyte`
-4. Run `kubectl port-forward svc/airbyte-server-svc 8001:8001` in a new terminal window.
-   * This exposes `airbyte-server`, the Airbyte api server.
-   * If you redeploy `airbyte-server`, you will need to re-run this process.
-5. Run `kubectl port-forward svc/airbyte-webapp-svc 8000:80` in a new terminal window.
-   * This exposes `airbyte-webapp`, the server for the static web app.
-   * These static assets will make calls to the Airbyte api server, which is why both services needed to be port forwarded.
-   * If you redeploy `airbyte-webapp`, you will need to re-run this process.
-6. Go to [http://localhost:8000/](http://localhost:8000/) and use Airbyte!
+To test on Google Kubernetes Engine(GKE), create a standard zonal cluster.
 
-## Current Limitations
+To test on  Amazon Elastic Kubernetes Service (Amazon EKS), install eksctl and create a cluster.
 
-* The server, scheduler, and workers must all run on the same node in the Kubernetes cluster.
-* Airbyte passes records inefficiently between pods by `kubectl attach`-ing to pods using `kubectl run`.
-* The provided manifests do not easily allow configuring a non-default namespace.
-* Latency for UI operations is high.
-* We don't clean up completed worker job and pod histories. 
-  * All records replicated are also logged to the Kubernetes logging service. 
-  * Logs, events, and job/pod histories require manual deletion.
-* Please let us know on [Slack](https://slack.airbyte.io):
-  * if those issues are blocking your adoption of Airbyte.
-  * if you encounter any other issues or limitations of our Kube implementation.
-  * if you'd like to make contributions to fix some of these issues!
+:::info 
+Airbyte deployment is tested on GKE and EKS with version v1.19 and above. If you run into problems, reach out on the `#airbyte-help` channel in our Slack or create an issue on GitHub.
+:::
 
-## Creating Testing Clusters
+## Install and configure `kubectl `
 
-* Local \(Mac\)
-  * Install [Docker for Mac](https://docs.docker.com/docker-for-mac/install/)
-  * Under `Preferences` enable Kubernetes.
-  * Use `kubectl config get-contexts` to show the contexts available.
-  * Use the Docker UI or `kubectl use-context <docker desktop context>` to access the cluster with `kubectl`.
-* Local \(Linux\)
-  * Consider using a tool like [Minikube](https://minikube.sigs.k8s.io/docs/start/) to start a local cluster.
-* GKE
-  * Configure `gcloud` with `gcloud auth login`.
-  * [Create a cluster with the command line or the Cloud Console UI](https://cloud.google.com/kubernetes-engine/docs/how-to/creating-a-zonal-cluster)
-  * If you created the cluster on the command line, the context will be written automatically.
-  * If you used the UI, you can copy and paste the command used to connect from the cluster page.
-  * Use `kubectl config get-contexts` to show the contexts available.
-  * Run `kubectl use-context <gke context>` to access the cluster with `kubectl`.
-* EKS
-  * [Configure your AWS CLI](https://docs.aws.amazon.com/cli/latest/userguide/cli-chap-configure.html) to connect to your project.
-  * Install [eksctl](https://eksctl.io/introduction/)
-  * Run `eksctl create cluster` to create an EKS cluster/VPC/subnets/etc.
-    * This should take 10-15 minutes.
-    * The default settings should be able to support running Airbyte.
-  * Run `eksctl utils write-kubeconfig --cluster=<CLUSTER NAME>` to make the context available to `kubectl`
-  * Use `kubectl config get-contexts` to show the contexts available.
-  * Run `kubectl use-context <eks context>` to access the cluster with `kubectl`.
+Install `kubectl` and run the following command to configure it and connect to your cluster:
 
-## Kustomize
+```bash
+kubectl use-context <my-cluster-name>
+```
 
-We use [Kustomize](https://kustomize.io/), which is built into `kubectl` to allow overrides for different environments.
+To configure `kubectl` in `GKE`:
 
-Our shared resources are in the `kube/resources` directory, and we define overlays for each environment. We recommend creating your own overlay if you want to customize your deployments.
+1. Initialize the `gcloud` cli.
+2. To view cluster details, go to the `cluster` page in the Google Cloud Console and click `connect`. Run the following command to test cluster details: 
+`gcloud container clusters get-credentials <CLUSTER_NAME> --zone <ZONE_NAME> --project <PROJECT_NAME>`.
+3. To view contexts, run: `kubectl config get-contexts`.
+4. To access the cluster from `kubectl` run : `kubectl config use-context <gke context>`.
 
-Example `kustomization.yaml` file:
+To configure `kubectl` in  `EKS`:
 
-```yaml
+1. [Configure AWS CLI](https://docs.aws.amazon.com/cli/latest/userguide/cli-chap-configure.html) to connect to your project.
+2. Install [`eksctl`](https://eksctl.io/introduction/).
+3. To Make contexts available to `kubectl`, run `eksctl utils write-kubeconfig --cluster=<CLUSTER NAME>`  
+4. To view available contexts,  run `kubectl config get-contexts`.
+5. To access the cluster, run `kubectl config use-context <eks context>`.
+
+## Configure Logs
+
+### Default configuration
+
+Airbyte comes with a self-contained Kubernetes deployment and uses a stand-alone `Minio` deployment in both the `dev` and `stable` versions. Logs are published to the `Minio` deployment by default.
+
+To send the logs to the local `Minio` deployment, make sure the specified credentials have both read and write permissions.
+
+### Custom configuration
+
+Airbyte supports logging to the `Minio` layer, `S3` bucket, and `GCS` bucket.
+
+### Customize the `Minio` log location
+
+To write to a custom location, update the following `.env` variable in the `kube/overlays/stable` directory (you will find this directory at the location you launched Airbyte)
+
+``` bash
+S3_LOG_BUCKET=<your_minio_bucket_to_write_logs_in>
+AWS_ACCESS_KEY_ID=<your_minio_access_key>
+AWS_SECRET_ACCESS_KEY=<your_minio_secret_key>
+S3_MINIO_ENDPOINT=<endpoint_where_minio_is_deployed_at>
+S3_LOG_BUCKET_REGION=
+```
+Set the` S3_PATH_STYLE_ACCESS variable to `true`.
+Let the `S3_LOG_BUCKET_REGION` variable remain empty.
+
+### Configure the Custom `S3` Log Location​
+
+For the `S3` log location, create an S3 bucket with your AWS credentials.
+
+To write to a custom location, update the following `.env` variable in the `kube/overlays/stable` directory (you can find this directory at the location you launched Airbyte)
+
+``` bash
+S3_LOG_BUCKET=<your_s3_bucket_to_write_logs_in>
+S3_LOG_BUCKET_REGION=<your_s3_bucket_region>
+# Set this to empty.
+S3_MINIO_ENDPOINT=
+# Set this to empty.
+S3_PATH_STYLE_ACCESS=
+```
+Replace the following variable in `.secrets` file in the `kube/overlays/stable` directory:
+
+```bash
+AWS_ACCESS_KEY_ID=<your_aws_access_key_id>
+AWS_SECRET_ACCESS_KEY=<your_aws_secret_access_key>
+```
+
+### Configure the Custom GCS Log Location​
+
+Create a GCS bucket and  GCP credentials if you haven’t already. Make sure your GCS log bucket has read/write permission.
+
+To configure the custom log location:
+
+Base encode the GCP JSON secret with the following command:
+
+```bash
+# The output of this command will be a Base64 string.
+$ cat gcp.json | base64
+```
+To populate the `gcs-log-creds` secrets with the Base64-encoded credential, take the encoded GCP JSON secret from the previous step and add it to `secret-gcs-log-creds.yaml` file as the value for `gcp.json` key. 
+
+```bash
+apiVersion: v1
+kind: Secret
+metadata:
+ name: gcs-log-creds
+ namespace: default
+data:
+ gcp.json: <base64-encoded-string>
+```
+
+In the `kube/overlays/stable` directory, update the  `GCS_LOG_BUCKET` with your GCS log bucket credentials:
+
+```bash
+GCS_LOG_BUCKET=<your_GCS_bucket_to_write_logs_in>
+```
+
+Modify `GOOGLE_APPLICATION_CREDENTIALS` to the path to `gcp.json` in the `.secrets` file at `kube/overlays/stable` directory.
+
+```bash
+# The path the GCS creds are written to. Unless you know what you are doing, use the below default value.
+
+GOOGLE_APPLICATION_CREDENTIALS=/secrets/gcs-log-creds/gcp.json
+```
+
+
+## Launch Airbyte
+
+The following commands will help you launch Airbyte:
+
+```bash
+git clone https://github.com/airbytehq/airbyte.git
+cd airbyte
+kubectl apply -k kube/overlays/stable
+```
+
+To check the pod status, run `kubectl get pods | grep airbyte`.
+
+If you are on Windows, run `kubectl get pods` to the list of pods.
+
+Run `kubectl port-forward svc/airbyte-webapp-svc 8000:80`  to allow access to the UI/API.
+Navigate to http://localhost:8000 in your browser to verify the deployment.
+
+## Deploy Airbyte on Kubernetes in production
+
+### Set resource limits
+
+* Core container pods 
+
+  * To provide different resource requirements for core pods, set resource limits in the  `kube/overlays/stable-with-resource-limits/set-resource-limits.yaml` file.
+
+  * To launch Airbyte with new resource limits, 	use the `kubectl apply -k kube/overlays/stable-with-resource-limits command.
+
+* Connector pods
+	
+  * By default, connector pods launch without resource limits. To add resource limit, configure the `Docker resource limits` section of the `.env` file in the `kube/overlays` directory.
+
+* Volume sizes
+
+  * To specify different volume sizes for the persistent volume backing Airbyte, modify `kube/resources/volume-*`  files.
+
+
+### Increase job parallelism
+
+The ability to run parallel jobs like getting specs, checking connections, discovering schemas and performing syncs is limited by a few factors. `Airbyte-worker-pods` picks and executes the job. Increasing the number of workers will allow more jobs to be processed.
+
+To create more worker pods, increase the number of replicas for the `airbyte-worker` deployment. Refer to examples of increasing worker pods in a Kustomization patch in `airbyte/kube/overlays/dev-integration-test/kustomization.yaml` and `airbyte/kube/overlays/dev-integration-test/parallelize-worker.yaml` 
+ 
+To limit the exposed ports in `.env`  file, set the value to `TEMPORAL_WORKER_PORTS`. You can run jobs parallely at each exposed port.
+If you do not have enough ports to communicate, the jobs might not complete or halt until ports become available.
+
+You can set a limit for the maximum parallel jobs that run on the pod. Set the value to `MAX_SPEC_WORKERS`, `MAX_CHECK_WORKERS`, `MAX_DISCOVER_WORKERS`, and `MAX_SYNC_WORKERS` variables in the worker pod deployment and not in `.env` file. You can use these values to create separate worker deployments for each type of worker with different resource allocations.
+
+
+### Cloud Logging
+
+Airbyte writes logs to two different directories: The `App-logging` directory and the `job-logging` directory. App logs, server logs, and scheduler logs are written to the `app-logging` directory. Job logs are written to the `job-logging` directory. Both directories live at the top level. For example, the app logging directory may live at `s3://log-bucket/app-logging`. We recommend having a dedicated logging bucket and not using it for other purposes.
+
+Airbyte publishes logs every minute, so it’s normal to have minute-long log delays. Cloud Storages do not support append operations. Each publisher creates its own log files, which means you will have hundreds of files in your log bucket.
+
+Each log file is uncompressed and named `{yyyyMMddHH24mmss}_{podname}_{UUID}`.
+To view logs, navigate to the relevant folder and download the file for the time period you want.
+
+### Use external databases
+
+You can configure a custom database instead of a simple `postgres` container in Kubernetes. This separate instance (AWS RDS or Google Cloud SQL) should be easier and safer to maintain than Postgres on your cluster.
+
+## Customize Airbytes Manifests
+
+We use Kustomize to allow configuration for different environments. Our shared resources are in the `kube/resources` directory. We recommend defining overlays for each environment and creating your own overlay to customize your deployments. The overlay can live in your own version control system.
+An example of `kustomization.yaml`  file:
+
+```bash
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 
-bases:
-  - https://github.com/airbytehq/airbyte.git/kube/overlays/stable?ref=master
+bases: https://github.com/airbytehq/airbyte.git/kube/overlays/stable?ref=master
 ```
 
-This would allow you to define custom resources or extend existing resources, even within your own VCS.
+### View Raw Manifests
 
-## View Raw Manifests
+To view manifests for a specific overlay that Kustomize applies to your Kubernetes cluster, run `kubectl kustomize kube/overlays/stable`. 
 
-For a specific overlay, you can run `kubectl kustomize kube/overlays/stable` to view the manifests that Kustomize will apply to your Kubernetes cluster. This is useful for debugging because it will show the exact resources you are defining.
 
-## Resizing Volumes
+### Helm Charts
 
-To resize a volume, change the `.spec.resources.requests.storage` value. After re-applying, the mount should be extended if that operation is supported for your type of mount. For a production instance, it's useful to track the usage of volumes to ensure they don't run out of space.
+For detailed information about Helm Charts, refer to the charts [readme](https://github.com/airbytehq/airbyte/tree/master/charts/airbyte) file.
 
-## Copy Files To/From Volumes
 
-See the documentation for [`kubectl cp`](https://kubernetes.io/docs/reference/generated/kubectl/kubectl-commands#cp).
+## Operator Guide
 
-## Dev Iteration \(on local Kubernetes clusters\)
+### View API server logs
 
-If you're developing using a local context and are not using your local Kubernetes instance for anything else, you can iterate with the following series of commands.
+You can view real-time logs in `kubectl logs deployments/airbyte-server` directory and download them from the Admin Tab.
+
+### Connector Container Logs​
+
+All logs can be accessed by viewing the scheduler logs. As for connector container logs, use Airbyte UI or Airbyte API to isolate them for a specific job attempt and for easier understanding. Connector pods launched by Airbyte will not relay logs directly to Kubernetes logging. You must access these logs through Airbyte.
+
+
+### Resize Volumes
+
+To resize a volume, change the `.spec.resources.requests.storage` value. After re-applying, extend the mount(if that operation is supported for your mount type). For a production deployment, track the usage of volumes to ensure they don't run out of space.
+
+### Copy Files in Volumes
+
+To copy files, use the [`cp` command in kubectl](https://kubernetes.io/docs/reference/generated/kubectl/kubectl-commands#cp).
+
+### List Files
+
+To list files, run:
+
+`kubectl exec -it airbyte-server-6b5747df5c-bj4fx ls /tmp/workspace/8`
+
+### Read Files
+
+To read files, run:
+
+`kubectl exec -it airbyte-server-6b5747df5c-bj4fx cat /tmp/workspace/8/0/logs.log`
+
+### Persistent storage on Google Kubernetes Engine(GKE) regional cluster
+
+Running Airbyte on a GKE regional cluster requires enabling persistent regional storage. Start with [enabling CSE driver](https://cloud.google.com/kubernetes-engine/docs/how-to/persistent-volumes/gce-pd-csi-driver#enabling_the_on_an_existing_cluster) on GKE and add `storageClassName: standard-rwo` to the [volume-configs.yamll](https://github.com/airbytehq/airbyte/blob/86ee2ad05bccb4aca91df2fb07c412efde5ba71c/kube/resources/volume-configs.yaml).
+
+Sample `volume-configs.yaml` file:
 
 ```bash
-./gradlew composeBuild # build dev images
-kubectl delete -k kube/overlays/dev # optional, if you want to try recreating resources
-kubectl apply -k kube/overlays/dev # applies manifests
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: airbyte-volume-configs
+  labels:
+    airbyte: volume-configs
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 500Mi
+  storageClassName: standard-rwo
 ```
 
-Then restart the port-forwarding commands.
+## Troubleshooting
+If you encounter any issues, reach out to our community on [Slack](https://slack.airbyte.com/).
 
-Note: this does not remove jobs and pods created for Airbyte workers.
 
-If you are in a dev environment on a local cluster only running Airbyte and want to start completely from scratch, you can use the following command to destroy everything on the cluster:
-
-```bash
-# BE CAREFUL, THIS COMMAND DELETES ALL RESOURCES, EVEN NON-AIRBYTE ONES!
-kubectl delete "$(kubectl api-resources --namespaced=true --verbs=delete -o name | tr "\n" "," | sed -e 's/,$//')" --all
-```
-
-## Dev Iteration \(on GKE\)
-
-The process is similar to developing on a local cluster, except you will need to build the local version and push it to your own container registry with names such as `your-registry/scheduler`. Then you will need to configure an overlay to override the name of images and apply your overlay with `kubectl apply -k <path to your overlay`.
-
-## Listing Files
-
-```bash
-kubectl exec -it airbyte-scheduler-6b5747df5c-bj4fx ls /tmp/workspace/8
-```
-
-## Reading Files
-
-```bash
-kubectl exec -it airbyte-scheduler-6b5747df5c-bj4fx cat /tmp/workspace/8/0/logs.log
-```
 

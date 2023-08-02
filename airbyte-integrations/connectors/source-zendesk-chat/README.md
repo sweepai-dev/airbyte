@@ -8,6 +8,8 @@ For information about how to use this connector within Airbyte, see [the documen
 ### Prerequisites
 **To iterate on this connector, make sure to complete this prerequisites section.**
 
+#### Minimum Python version required `= 3.7.0`
+
 #### Build & Activate Virtual Environment and install dependencies
 From this connector directory, create a virtual environment:
 ```
@@ -50,6 +52,16 @@ python main_dev.py check --config secrets/config.json
 python main_dev.py discover --config secrets/config.json
 python main_dev.py read --config secrets/config.json --catalog sample_files/configured_catalog.json
 ```
+
+#### Acceptance Tests
+Customize `acceptance-test-config.yml` file to configure tests. See [Connector Acceptance Tests](https://docs.airbyte.io/connector-development/testing-connectors/connector-acceptance-tests-reference) for more information.
+If your connector requires to create or destroy resources for use during acceptance tests create fixtures for it and place them inside integration_tests/acceptance.py.
+To run your integration tests with acceptance tests, from the connector root, run
+```
+docker build . --no-cache -t airbyte/source-zendesk-chat:dev \
+&& python -m pytest -p connector_acceptance_test.plugin
+```
+To run your integration tests with docker
 
 ### Unit Tests
 To run unit tests locally, from the connector directory run:

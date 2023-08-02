@@ -1,25 +1,5 @@
 /*
- * MIT License
- *
- * Copyright (c) 2020 Airbyte
- *
- * Permission is hereby granted, free of charge, to any person obtaining a copy
- * of this software and associated documentation files (the "Software"), to deal
- * in the Software without restriction, including without limitation the rights
- * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
- * copies of the Software, and to permit persons to whom the Software is
- * furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice shall be included in all
- * copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
- * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
- * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
- * SOFTWARE.
+ * Copyright (c) 2023 Airbyte, Inc., all rights reserved.
  */
 
 package io.airbyte.commons.util;
@@ -55,15 +35,15 @@ class LazyAutoCloseableIteratorTest {
 
   @Test
   void testNullInput() {
-    assertThrows(NullPointerException.class, () -> new LazyAutoCloseableIterator<>(null));
-    final AutoCloseableIterator<String> iteratorWithNullSupplier = new LazyAutoCloseableIterator<>(() -> null);
+    assertThrows(NullPointerException.class, () -> new LazyAutoCloseableIterator<>(null, null));
+    final AutoCloseableIterator<String> iteratorWithNullSupplier = new LazyAutoCloseableIterator<>(() -> null, null);
     assertThrows(NullPointerException.class, iteratorWithNullSupplier::next);
   }
 
   @Test
   void testEmptyInput() throws Exception {
     mockInternalIteratorWith(Collections.emptyIterator());
-    final AutoCloseableIterator<String> iterator = new LazyAutoCloseableIterator<>(iteratorSupplier);
+    final AutoCloseableIterator<String> iterator = new LazyAutoCloseableIterator<>(iteratorSupplier, null);
 
     assertFalse(iterator.hasNext());
     iterator.close();
@@ -74,7 +54,7 @@ class LazyAutoCloseableIteratorTest {
   void test() throws Exception {
     mockInternalIteratorWith(MoreIterators.of("a", "b", "c"));
 
-    final AutoCloseableIterator<String> iterator = new LazyAutoCloseableIterator<>(iteratorSupplier);
+    final AutoCloseableIterator<String> iterator = new LazyAutoCloseableIterator<>(iteratorSupplier, null);
     verify(iteratorSupplier, never()).get();
     assertNext(iterator, "a");
     verify(iteratorSupplier).get();
@@ -88,17 +68,17 @@ class LazyAutoCloseableIteratorTest {
   @Test
   void testCloseBeforeSupply() throws Exception {
     mockInternalIteratorWith(MoreIterators.of("a", "b", "c"));
-    final AutoCloseableIterator<String> iterator = new LazyAutoCloseableIterator<>(iteratorSupplier);
+    final AutoCloseableIterator<String> iterator = new LazyAutoCloseableIterator<>(iteratorSupplier, null);
     iterator.close();
     verify(iteratorSupplier, never()).get();
   }
 
-  private void mockInternalIteratorWith(Iterator<String> iterator) {
+  private void mockInternalIteratorWith(final Iterator<String> iterator) {
     when(internalIterator.hasNext()).then((a) -> iterator.hasNext());
     when(internalIterator.next()).then((a) -> iterator.next());
   }
 
-  private void assertNext(Iterator<String> iterator, String value) {
+  private void assertNext(final Iterator<String> iterator, final String value) {
     assertTrue(iterator.hasNext());
     assertEquals(value, iterator.next());
   }

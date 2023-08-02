@@ -1,34 +1,14 @@
 #
-# MIT License
-#
-# Copyright (c) 2020 Airbyte
-#
-# Permission is hereby granted, free of charge, to any person obtaining a copy
-# of this software and associated documentation files (the "Software"), to deal
-# in the Software without restriction, including without limitation the rights
-# to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-# copies of the Software, and to permit persons to whom the Software is
-# furnished to do so, subject to the following conditions:
-#
-# The above copyright notice and this permission notice shall be included in all
-# copies or substantial portions of the Software.
-#
-# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-# IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-# FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-# AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-# LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-# OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-# SOFTWARE.
+# Copyright (c) 2023 Airbyte, Inc., all rights reserved.
 #
 
 
 from pathlib import Path
 
 import pytest
-from base_python import AirbyteLogger
+from airbyte_cdk import AirbyteLogger
 from source_file import SourceFile
-from source_file.client import Client
+from source_file.client import Client, ConfigurationError
 
 SAMPLE_DIRECTORY = Path(__file__).resolve().parent.joinpath("sample_files/formats")
 
@@ -51,6 +31,7 @@ def check_read(config, expected_columns=10, expected_rows=42):
         ("excel", "xlsx", 8, 50, "demo"),
         ("feather", "feather", 9, 3, "demo"),
         ("parquet", "parquet", 9, 3, "demo"),
+        ("yaml", "yaml", 8, 3, "demo"),
     ],
 )
 def test_local_file_read(file_format, extension, expected_columns, expected_rows, filename):
@@ -58,6 +39,28 @@ def test_local_file_read(file_format, extension, expected_columns, expected_rows
     file_path = str(file_directory.joinpath(f"{filename}.{extension}"))
     configs = {"dataset_name": "test", "format": file_format, "url": file_path, "provider": {"storage": "local"}}
     check_read(configs, expected_columns, expected_rows)
+
+
+@pytest.mark.parametrize(
+    "file_format, extension, wrong_format, filename",
+    [
+        ("excel", "xls", "csv", "demo"),
+        ("excel", "xlsx", "csv", "demo"),
+        ("csv", "csv", "excel", "demo"),
+        ("csv", "csv", "excel", "demo"),
+        ("jsonl", "jsonl", "excel", "jsonl_nested"),
+        ("feather", "feather", "csv", "demo"),
+        ("parquet", "parquet", "feather", "demo"),
+        ("yaml", "yaml", "json", "demo"),
+    ],
+)
+def test_raises_file_wrong_format(file_format, extension, wrong_format, filename):
+    file_directory = SAMPLE_DIRECTORY.joinpath(file_format)
+    file_path = str(file_directory.joinpath(f"{filename}.{extension}"))
+    configs = {"dataset_name": "test", "format": wrong_format, "url": file_path, "provider": {"storage": "local"}}
+    client = Client(**configs)
+    with pytest.raises((TypeError, ValueError, ConfigurationError)):
+        list(client.read())
 
 
 def run_load_dataframes(config, expected_columns=10, expected_rows=42):

@@ -1,30 +1,10 @@
 /*
- * MIT License
- *
- * Copyright (c) 2020 Airbyte
- *
- * Permission is hereby granted, free of charge, to any person obtaining a copy
- * of this software and associated documentation files (the "Software"), to deal
- * in the Software without restriction, including without limitation the rights
- * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
- * copies of the Software, and to permit persons to whom the Software is
- * furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice shall be included in all
- * copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
- * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
- * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
- * SOFTWARE.
+ * Copyright (c) 2023 Airbyte, Inc., all rights reserved.
  */
 
 package io.airbyte.integrations.base;
 
-import io.airbyte.protocol.models.AirbyteMessage;
+import io.airbyte.protocol.models.v0.AirbyteMessage;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -33,9 +13,13 @@ import org.slf4j.LoggerFactory;
  * the {@link AirbyteMessageConsumer} interface. The original interface methods are wrapped in
  * generic exception handlers - any exception is caught and logged.
  *
- * Two methods are intended for extension: - startTracked: Wraps set up of necessary
- * infrastructure/configuration before message consumption. - acceptTracked: Wraps actual processing
- * of each {@link io.airbyte.protocol.models.AirbyteMessage}.
+ * Two methods are intended for extension:
+ * <ul>
+ * <li>startTracked: Wraps set up of necessary infrastructure/configuration before message
+ * consumption.</li>
+ * <li>acceptTracked: Wraps actual processing of each
+ * {@link io.airbyte.protocol.models.v0.AirbyteMessage}.</li>
+ * </ul>
  *
  * Though not necessary, we highly encourage using this class when implementing destinations. See
  * child classes for examples.
@@ -46,25 +30,41 @@ public abstract class FailureTrackingAirbyteMessageConsumer implements AirbyteMe
 
   private boolean hasFailed = false;
 
+  /**
+   * Wraps setup of necessary infrastructure/configuration before message consumption
+   *
+   * @throws Exception
+   */
   protected abstract void startTracked() throws Exception;
 
   @Override
   public void start() throws Exception {
     try {
       startTracked();
-    } catch (Exception e) {
+    } catch (final Exception e) {
+      LOGGER.error("Exception while starting consumer", e);
       hasFailed = true;
       throw e;
     }
   }
 
+  /**
+   * Processing of AirbyteMessages with general functionality of storing STATE messages, serializing
+   * RECORD messages and storage within a buffer
+   *
+   * NOTE: Not all the functionality mentioned above is always true but generally applies
+   *
+   * @param msg {@link AirbyteMessage} to be processed
+   * @throws Exception
+   */
   protected abstract void acceptTracked(AirbyteMessage msg) throws Exception;
 
   @Override
-  public void accept(AirbyteMessage msg) throws Exception {
+  public void accept(final AirbyteMessage msg) throws Exception {
     try {
       acceptTracked(msg);
-    } catch (Exception e) {
+    } catch (final Exception e) {
+      LOGGER.error("Exception while accepting message", e);
       hasFailed = true;
       throw e;
     }
@@ -74,7 +74,11 @@ public abstract class FailureTrackingAirbyteMessageConsumer implements AirbyteMe
 
   @Override
   public void close() throws Exception {
-    LOGGER.info("hasFailed: {}.", hasFailed);
+    if (hasFailed) {
+      LOGGER.warn("Airbyte message consumer: failed.");
+    } else {
+      LOGGER.info("Airbyte message consumer: succeeded.");
+    }
     close(hasFailed);
   }
 

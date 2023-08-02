@@ -5,10 +5,23 @@
       "properties": {}
     },
     "reversals": {
-      "type": ["null", "array"],
-      "items": {
-        "type": ["null", "object"],
-        "properties": {}
+      "type": ["null", "object"],
+      "properties": {
+        "object": {
+          "type": ["null", "string"]
+        },
+        "data": {
+          "type": ["null", "array"]
+        },
+        "has_more": {
+          "type": ["null", "boolean"]
+        },
+        "total_count": {
+          "type": ["null", "number"]
+        },
+        "url": {
+          "type": ["null", "string"]
+        }
       }
     },
     "id": {
@@ -39,8 +52,7 @@
       "type": ["null", "string"]
     },
     "date": {
-      "type": ["null", "string"],
-      "format": "date-time"
+      "type": ["null", "integer"]
     },
     "livemode": {
       "type": ["null", "boolean"]
@@ -70,15 +82,10 @@
       "type": ["null", "string"]
     },
     "arrival_date": {
-      "type": ["null", "string"],
-      "format": "date-time"
+      "type": ["null", "integer"]
     },
     "description": {
       "type": ["null", "string"]
-    },
-    "updated": {
-      "type": ["null", "string"],
-      "format": "date-time"
     }
   },
   "type": ["null", "object"]

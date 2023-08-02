@@ -1,25 +1,5 @@
 #
-# MIT License
-#
-# Copyright (c) 2020 Airbyte
-#
-# Permission is hereby granted, free of charge, to any person obtaining a copy
-# of this software and associated documentation files (the "Software"), to deal
-# in the Software without restriction, including without limitation the rights
-# to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-# copies of the Software, and to permit persons to whom the Software is
-# furnished to do so, subject to the following conditions:
-#
-# The above copyright notice and this permission notice shall be included in all
-# copies or substantial portions of the Software.
-#
-# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-# IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-# FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-# AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-# LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-# OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-# SOFTWARE.
+# Copyright (c) 2023 Airbyte, Inc., all rights reserved.
 #
 
 
@@ -33,9 +13,15 @@ HERE = pathlib.Path(__file__).parent
 # The text of the README file
 README = (HERE / "README.md").read_text()
 
+avro_dependency = "avro~=1.11.2"
+fastavro_dependency = "fastavro~=1.8.0"
+pyarrow_dependency = "pyarrow==12.0.1"
+
 setup(
     name="airbyte-cdk",
-    version="0.1.3",
+    # The version of the airbyte-cdk package is used at runtime to validate manifests. That validation must be
+    # updated if our semver format changes such as using release candidate versions.
+    version="0.48.0",
     description="A framework for writing Airbyte Connectors.",
     long_description=README,
     long_description_content_type="text/markdown",
@@ -53,9 +39,7 @@ setup(
         "Topic :: Software Development :: Libraries :: Python Modules",
         "License :: OSI Approved :: MIT License",
         # Python Version Support
-        "Programming Language :: Python :: 3.7",
         "Programming Language :: Python :: 3.8",
-        "Programming Language :: Python :: 3.9",
     ],
     keywords="airbyte connector-development-kit cdk",
     project_urls={
@@ -64,24 +48,49 @@ setup(
         "Tracker": "https://github.com/airbytehq/airbyte/issues",
     },
     packages=find_packages(exclude=("unit_tests",)),
+    package_data={"airbyte_cdk": ["py.typed", "sources/declarative/declarative_component_schema.yaml"]},
     install_requires=[
+        "airbyte-protocol-models==0.4.0",
         "backoff",
-        "jsonschema==2.6.0",
+        "dpath~=2.0.1",
+        "isodate~=0.6.1",
+        "jsonschema~=3.2.0",
+        "jsonref~=0.2",
         "pendulum",
-        "pydantic==1.6.2",
-        "PyYAML==5.4",
+        "genson==1.2.2",
+        "pydantic>=1.9.2,<2.0.0",
+        "python-dateutil",
+        "PyYAML>=6.0.1",
         "requests",
+        "requests_cache",
+        "Deprecated~=1.2",
+        "Jinja2~=3.1.2",
+        "cachetools",
+        "wcmatch==8.4",
     ],
-    python_requires=">=3.7.9",
+    python_requires=">=3.8",
     extras_require={
         "dev": [
-            "MyPy==0.812",
+            avro_dependency,
+            fastavro_dependency,
+            "freezegun",
+            "mypy",
             "pytest",
             "pytest-cov",
             "pytest-mock",
-        ]
-    },
-    entry_points={
-        "console_scripts": ["base-python=base_python.entrypoint:main"],
+            "requests-mock",
+            "pytest-httpserver",
+            "pandas==2.0.3",
+            pyarrow_dependency,
+        ],
+        "sphinx-docs": [
+            "Sphinx~=4.2",
+            "sphinx-rtd-theme~=1.0",
+        ],
+        "file-based": [
+            avro_dependency,
+            fastavro_dependency,
+            pyarrow_dependency,
+        ],
     },
 )

@@ -1,6 +1,6 @@
 {
   "type": ["null", "object"],
-  "additionalProperties": false,
+  "additionalProperties": true,
   "properties": {
     "channel_id": {
       "type": ["null", "string"]
@@ -18,8 +18,10 @@
       "type": ["null", "string"]
     },
     "ts": {
-      "type": ["null", "string"],
-      "format": "date-time"
+      "type": ["null", "string"]
+    },
+    "float_ts": {
+      "type": ["null", "number"]
     },
     "team": {
       "type": ["null", "string"]

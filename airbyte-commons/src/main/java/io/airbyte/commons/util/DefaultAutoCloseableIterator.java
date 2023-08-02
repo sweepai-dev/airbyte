@@ -1,25 +1,5 @@
 /*
- * MIT License
- *
- * Copyright (c) 2020 Airbyte
- *
- * Permission is hereby granted, free of charge, to any person obtaining a copy
- * of this software and associated documentation files (the "Software"), to deal
- * in the Software without restriction, including without limitation the rights
- * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
- * copies of the Software, and to permit persons to whom the Software is
- * furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice shall be included in all
- * copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
- * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
- * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
- * SOFTWARE.
+ * Copyright (c) 2023 Airbyte, Inc., all rights reserved.
  */
 
 package io.airbyte.commons.util;
@@ -27,7 +7,9 @@ package io.airbyte.commons.util;
 import com.google.common.base.Preconditions;
 import com.google.common.collect.AbstractIterator;
 import io.airbyte.commons.concurrency.VoidCallable;
+import io.airbyte.protocol.models.AirbyteStreamNameNamespacePair;
 import java.util.Iterator;
+import java.util.Optional;
 
 /**
  * The canonical {@link AutoCloseableIterator}. The default behavior guarantees that the provided
@@ -35,17 +17,19 @@ import java.util.Iterator;
  *
  * @param <T> type
  */
-class DefaultAutoCloseableIterator<T> extends AbstractIterator<T> implements AutoCloseableIterator<T> {
+class DefaultAutoCloseableIterator<T> extends AbstractIterator<T> implements AutoCloseableIterator<T>, AirbyteStreamAware {
 
+  private final AirbyteStreamNameNamespacePair airbyteStream;
   private final Iterator<T> iterator;
   private final VoidCallable onClose;
 
   private boolean hasClosed;
 
-  public DefaultAutoCloseableIterator(Iterator<T> iterator, VoidCallable onClose) {
+  public DefaultAutoCloseableIterator(final Iterator<T> iterator, final VoidCallable onClose, final AirbyteStreamNameNamespacePair airbyteStream) {
     Preconditions.checkNotNull(iterator);
     Preconditions.checkNotNull(onClose);
 
+    this.airbyteStream = airbyteStream;
     this.iterator = iterator;
     this.onClose = onClose;
     this.hasClosed = false;
@@ -68,6 +52,11 @@ class DefaultAutoCloseableIterator<T> extends AbstractIterator<T> implements Aut
       hasClosed = true;
       onClose.call();
     }
+  }
+
+  @Override
+  public Optional<AirbyteStreamNameNamespacePair> getAirbyteStream() {
+    return Optional.ofNullable(airbyteStream);
   }
 
   private void assertHasNotClosed() {

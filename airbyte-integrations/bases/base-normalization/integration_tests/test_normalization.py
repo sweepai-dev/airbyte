@@ -1,63 +1,52 @@
 #
-# MIT License
+# Copyright (c) 2023 Airbyte, Inc., all rights reserved.
 #
-# Copyright (c) 2020 Airbyte
-#
-# Permission is hereby granted, free of charge, to any person obtaining a copy
-# of this software and associated documentation files (the "Software"), to deal
-# in the Software without restriction, including without limitation the rights
-# to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-# copies of the Software, and to permit persons to whom the Software is
-# furnished to do so, subject to the following conditions:
-#
-# The above copyright notice and this permission notice shall be included in all
-# copies or substantial portions of the Software.
-#
-# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-# IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-# FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-# AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-# LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-# OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-# SOFTWARE.
-#
-
 
 import json
 import os
 import pathlib
-import random
 import re
 import shutil
-import socket
-import string
-import subprocess
-import sys
 import tempfile
-import threading
-from typing import Any, Dict, List
+from distutils.dir_util import copy_tree
+from typing import Any, Dict
 
 import pytest
+from integration_tests.dbt_integration_test import DbtIntegrationTest
+from integration_tests.utils import generate_dbt_models, run_destination_process
 from normalization.destination_type import DestinationType
-from normalization.transform_catalog.catalog_processor import CatalogProcessor
-from normalization.transform_config.transform import TransformConfig
 
 temporary_folders = set()
-target_schema = "test_normalization"
-container_name = "test_normalization_db_" + "".join(random.choice(string.ascii_lowercase) for i in range(3))
 
 # dbt models and final sql outputs from the following git versioned tests will be written in a folder included in
 # airbyte git repository.
-git_versioned_tests = ["test_primary_key_streams"]
+git_versioned_tests = ["test_simple_streams", "test_nested_streams"]
+
+dbt_test_utils = DbtIntegrationTest()
 
 
-@pytest.fixture(scope="package", autouse=True)
+@pytest.fixture(scope="module", autouse=True)
 def before_all_tests(request):
-    change_current_test_dir(request)
-    setup_postgres_db()
+    destinations_to_test = dbt_test_utils.get_test_targets()
+    # set clean-up args to clean target destination after the test
+    clean_up_args = {
+        "destination_type": [d for d in DestinationType if d.value in destinations_to_test],
+        "test_type": "normalization",
+        "git_versioned_tests": git_versioned_tests,
+    }
+    for integration_type in [d.value for d in DestinationType]:
+        if integration_type in destinations_to_test:
+            test_root_dir = f"{pathlib.Path().absolute()}/normalization_test_output/{integration_type.lower()}"
+            shutil.rmtree(test_root_dir, ignore_errors=True)
+    if os.getenv("RANDOM_TEST_SCHEMA"):
+        target_schema = dbt_test_utils.generate_random_string("test_normalization_ci_")
+        dbt_test_utils.set_target_schema(target_schema)
+    dbt_test_utils.change_current_test_dir(request)
+    dbt_test_utils.setup_db(destinations_to_test)
     os.environ["PATH"] = os.path.abspath("../.venv/bin/") + ":" + os.environ["PATH"]
     yield
-    tear_down_postgres_db()
+    dbt_test_utils.clean_tmp_tables(**clean_up_args)
+    dbt_test_utils.tear_down_db()
     for folder in temporary_folders:
         print(f"Deleting temporary test folder {folder}")
         shutil.rmtree(folder, ignore_errors=True)
@@ -65,7 +54,7 @@ def before_all_tests(request):
 
 @pytest.fixture
 def setup_test_path(request):
-    change_current_test_dir(request)
+    dbt_test_utils.change_current_test_dir(request)
     print(f"Running from: {pathlib.Path().absolute()}")
     print(f"Current PATH is: {os.environ['PATH']}")
     yield
@@ -81,95 +70,109 @@ def setup_test_path(request):
         ]
     ),
 )
-@pytest.mark.parametrize(
-    "integration_type",
-    [
-        "Postgres",
-        "BigQuery",
-        "Snowflake",
-        "Redshift",
-    ],
-)
-def test_normalization(integration_type: str, test_resource_name: str, setup_test_path):
-    print("Testing normalization")
-    destination_type = DestinationType.from_string(integration_type)
-    # Create the test folder with dbt project and appropriate destination settings to run integration tests from
-    test_root_dir = setup_test_dir(integration_type, test_resource_name)
-    destination_config = generate_profile_yaml_file(destination_type, test_root_dir)
-    # Use destination connector to create _airbyte_raw_* tables to use as input for the test
-    assert setup_input_raw_data(integration_type, test_resource_name, test_root_dir, destination_config)
-    # Normalization step
-    generate_dbt_models(destination_type, test_resource_name, test_root_dir)
-    dbt_run(test_root_dir)
-    # Run checks on Tests results
-    dbt_test(destination_type, test_resource_name, test_root_dir)
-    check_outputs(destination_type, test_resource_name, test_root_dir)
+@pytest.mark.parametrize("destination_type", DestinationType.testable_destinations())
+def test_normalization(destination_type: DestinationType, test_resource_name: str, setup_test_path):
+    if destination_type.value not in dbt_test_utils.get_test_targets():
+        pytest.skip(f"Destinations {destination_type} is not in NORMALIZATION_TEST_TARGET env variable")
+    if (
+        destination_type.value in (DestinationType.ORACLE.value, DestinationType.CLICKHOUSE.value)
+        and test_resource_name == "test_nested_streams"
+    ):
+        pytest.skip(f"Destinations {destination_type} does not support nested streams")
 
-
-def setup_postgres_db():
-    print("Starting localhost postgres container for tests")
-    port = find_free_port()
-    config = {
-        "host": "localhost",
-        "username": "integration-tests",
-        "password": "integration-tests",
-        "port": port,
-        "database": "postgres",
-        "schema": target_schema,
-    }
-    commands = [
-        "docker",
-        "run",
-        "--rm",
-        "--name",
-        f"{container_name}",
-        "-e",
-        f"POSTGRES_USER={config['username']}",
-        "-e",
-        f"POSTGRES_PASSWORD={config['password']}",
-        "-p",
-        f"{config['port']}:5432",
-        "-d",
-        "postgres",
-    ]
-    print("Executing: ", " ".join(commands))
-    subprocess.call(commands)
-    if not os.path.exists("../secrets"):
-        os.makedirs("../secrets")
-    with open("../secrets/postgres.json", "w") as fh:
-        fh.write(json.dumps(config))
-
-
-def find_free_port():
-    """
-    Find an unused port to create a database listening on localhost to run destination-postgres
-    """
-    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    s.bind(("", 0))
-    addr = s.getsockname()
-    s.close()
-    return addr[1]
-
-
-def tear_down_postgres_db():
-    print("Stopping localhost postgres container for tests")
+    target_schema = dbt_test_utils.target_schema
+    if destination_type.value == DestinationType.ORACLE.value:
+        # Oracle does not allow changing to random schema
+        dbt_test_utils.set_target_schema("test_normalization")
+    elif destination_type.value == DestinationType.REDSHIFT.value:
+        # set unique schema for Redshift test
+        dbt_test_utils.set_target_schema(dbt_test_utils.generate_random_string("test_normalization_"))
     try:
-        subprocess.call(["docker", "kill", f"{container_name}"])
-        os.remove("../secrets/postgres.json")
-    except Exception as e:
-        print(f"WARN: Exception while shutting down postgres db: {e}")
+        run_test_normalization(destination_type, test_resource_name)
+    finally:
+        dbt_test_utils.set_target_schema(target_schema)
 
 
-def change_current_test_dir(request):
-    # This makes the test run whether it is executed from the tests folder (with pytest/gradle) or from the base-normalization folder (through pycharm)
-    integration_tests_dir = os.path.join(request.fspath.dirname, "integration_tests")
-    if os.path.exists(integration_tests_dir):
-        os.chdir(integration_tests_dir)
-    else:
-        os.chdir(request.fspath.dirname)
+def run_test_normalization(destination_type: DestinationType, test_resource_name: str):
+    print(f"Testing normalization {destination_type} for {test_resource_name} in ", dbt_test_utils.target_schema)
+    # Create the test folder with dbt project and appropriate destination settings to run integration tests from
+    test_root_dir = setup_test_dir(destination_type, test_resource_name)
+    run_first_normalization(destination_type, test_resource_name, test_root_dir)
+    if os.path.exists(os.path.join("resources", test_resource_name, "data_input", "messages_incremental.txt")):
+        run_incremental_normalization(destination_type, test_resource_name, test_root_dir)
+    if os.path.exists(os.path.join("resources", test_resource_name, "data_input", "messages_schema_change.txt")):
+        run_schema_change_normalization(destination_type, test_resource_name, test_root_dir)
 
 
-def setup_test_dir(integration_type: str, test_resource_name: str) -> str:
+def run_first_normalization(destination_type: DestinationType, test_resource_name: str, test_root_dir: str):
+    destination_config = dbt_test_utils.generate_profile_yaml_file(destination_type, test_root_dir)
+    # Use destination connector to create _airbyte_raw_* tables to use as input for the test
+    assert setup_input_raw_data(destination_type, test_resource_name, test_root_dir, destination_config)
+    # generate models from catalog
+    generate_dbt_models(destination_type, test_resource_name, test_root_dir, "models", "catalog.json", dbt_test_utils)
+    # Setup test resources and models
+    setup_dbt_test(destination_type, test_resource_name, test_root_dir)
+    dbt_test_utils.dbt_check(destination_type, test_root_dir)
+    # Run dbt process
+    dbt_test_utils.dbt_run(destination_type, test_root_dir, force_full_refresh=True)
+    copy_tree(os.path.join(test_root_dir, "build/run/airbyte_utils/models/generated/"), os.path.join(test_root_dir, "first_output"))
+    shutil.rmtree(os.path.join(test_root_dir, "build/run/airbyte_utils/models/generated/"), ignore_errors=True)
+    # Verify dbt process
+    dbt_test(destination_type, test_root_dir)
+
+
+def run_incremental_normalization(destination_type: DestinationType, test_resource_name: str, test_root_dir: str):
+    # Use destination connector to reset _airbyte_raw_* tables with new incremental data
+    setup_incremental_data(destination_type, test_resource_name, test_root_dir)
+    # setup new test files
+    setup_dbt_incremental_test(destination_type, test_resource_name, test_root_dir)
+    # Run dbt process
+    dbt_test_utils.dbt_run(destination_type, test_root_dir)
+    normalize_dbt_output(test_root_dir, "build/run/airbyte_utils/models/generated/", "second_output")
+
+    if destination_type.value in [DestinationType.MYSQL.value, DestinationType.ORACLE.value]:
+        pytest.skip(f"{destination_type} does not support incremental yet")
+    dbt_test(destination_type, test_root_dir)
+
+
+def run_schema_change_normalization(destination_type: DestinationType, test_resource_name: str, test_root_dir: str):
+    if destination_type.value in [DestinationType.MYSQL.value, DestinationType.ORACLE.value]:
+        # TODO: upgrade dbt-adapter repositories to work with dbt 0.21.0+ (outside airbyte's control)
+        pytest.skip(f"{destination_type} does not support schema change in incremental yet (requires dbt 0.21.0+)")
+    if destination_type.value in [
+        DestinationType.SNOWFLAKE.value,
+        DestinationType.CLICKHOUSE.value,
+        DestinationType.TIDB.value,
+        DestinationType.DUCKDB.value,
+    ]:
+        pytest.skip(f"{destination_type} is disabled as it doesnt support schema change in incremental yet (column type changes)")
+    if destination_type.value in [DestinationType.MSSQL.value, DestinationType.SNOWFLAKE.value]:
+        # TODO: create/fix github issue in corresponding dbt-adapter repository to handle schema changes (outside airbyte's control)
+        pytest.skip(f"{destination_type} is disabled as it doesnt fully support schema change in incremental yet")
+
+    setup_schema_change_data(destination_type, test_resource_name, test_root_dir)
+    generate_dbt_models(
+        destination_type, test_resource_name, test_root_dir, "modified_models", "catalog_schema_change.json", dbt_test_utils
+    )
+    setup_dbt_schema_change_test(destination_type, test_resource_name, test_root_dir)
+    dbt_test_utils.dbt_run(destination_type, test_root_dir)
+    normalize_dbt_output(test_root_dir, "build/run/airbyte_utils/modified_models/generated/", "third_output")
+    dbt_test(destination_type, test_root_dir)
+
+
+def normalize_dbt_output(test_root_dir: str, input_dir: str, output_dir: str):
+    tmp_dir = os.path.join(test_root_dir, input_dir)
+    output_dir = os.path.join(test_root_dir, output_dir)
+    shutil.rmtree(output_dir, ignore_errors=True)
+
+    def copy_replace_dbt_tmp(src, dst):
+        dbt_test_utils.copy_replace(src, dst, "__dbt_tmp[0-9]+", "__dbt_tmp")
+
+    shutil.copytree(tmp_dir, output_dir, copy_function=copy_replace_dbt_tmp)
+    shutil.rmtree(tmp_dir, ignore_errors=True)
+
+
+def setup_test_dir(destination_type: DestinationType, test_resource_name: str) -> str:
     """
     We prepare a clean folder to run the tests from.
 
@@ -184,135 +187,190 @@ def setup_test_dir(integration_type: str, test_resource_name: str) -> str:
      these are interpreted and compiled into the native SQL dialect of the final destination engine)
     """
     if test_resource_name in git_versioned_tests:
-        test_root_dir = f"{pathlib.Path().absolute()}/normalization_test_output/{integration_type.lower()}"
+        test_root_dir = f"{pathlib.Path().absolute()}/normalization_test_output/{destination_type.value.lower()}"
     else:
-        test_root_dir = tempfile.mkdtemp(dir="/tmp/", prefix="normalization_test_", suffix=f"_{integration_type.lower()}")
-        temporary_folders.add(test_root_dir)
-    shutil.rmtree(test_root_dir, ignore_errors=True)
-    os.makedirs(test_root_dir)
+        test_root_dir = f"{pathlib.Path().joinpath('..', 'build', 'normalization_test_output', destination_type.value.lower()).resolve()}"
+    os.makedirs(test_root_dir, exist_ok=True)
     test_root_dir = f"{test_root_dir}/{test_resource_name}"
+    shutil.rmtree(test_root_dir, ignore_errors=True)
     print(f"Setting up test folder {test_root_dir}")
-    shutil.copytree("../dbt-project-template", test_root_dir)
-    if integration_type != "Redshift":
-        # Prefer 'view' to 'ephemeral' for tests so it's easier to debug with dbt
-        copy_replace(
-            "../dbt-project-template/dbt_project.yml",
-            os.path.join(test_root_dir, "dbt_project.yml"),
-            pattern="ephemeral",
-            replace_value="view",
-        )
-    else:
-        # 'view' materializations on redshift are too slow, so keep it ephemeral there...
-        copy_replace("../dbt-project-template/dbt_project.yml", os.path.join(test_root_dir, "dbt_project.yml"))
+    dbt_project_yaml = "../dbt-project-template/dbt_project.yml"
+    copy_tree("../dbt-project-template", test_root_dir)
+    if destination_type.value == DestinationType.MSSQL.value:
+        copy_tree("../dbt-project-template-mssql", test_root_dir)
+        dbt_project_yaml = "../dbt-project-template-mssql/dbt_project.yml"
+    elif destination_type.value == DestinationType.MYSQL.value:
+        copy_tree("../dbt-project-template-mysql", test_root_dir)
+        dbt_project_yaml = "../dbt-project-template-mysql/dbt_project.yml"
+    elif destination_type.value == DestinationType.ORACLE.value:
+        copy_tree("../dbt-project-template-oracle", test_root_dir)
+        dbt_project_yaml = "../dbt-project-template-oracle/dbt_project.yml"
+    elif destination_type.value == DestinationType.CLICKHOUSE.value:
+        copy_tree("../dbt-project-template-clickhouse", test_root_dir)
+        dbt_project_yaml = "../dbt-project-template-clickhouse/dbt_project.yml"
+    elif destination_type.value == DestinationType.SNOWFLAKE.value:
+        copy_tree("../dbt-project-template-snowflake", test_root_dir)
+        dbt_project_yaml = "../dbt-project-template-snowflake/dbt_project.yml"
+    elif destination_type.value == DestinationType.REDSHIFT.value:
+        copy_tree("../dbt-project-template-redshift", test_root_dir)
+        dbt_project_yaml = "../dbt-project-template-redshift/dbt_project.yml"
+    elif destination_type.value == DestinationType.TIDB.value:
+        copy_tree("../dbt-project-template-tidb", test_root_dir)
+        dbt_project_yaml = "../dbt-project-template-tidb/dbt_project.yml"
+    elif destination_type.value == DestinationType.DUCKDB.value:
+        copy_tree("../dbt-project-template-duckdb", test_root_dir)
+        dbt_project_yaml = "../dbt-project-template-duckdb/dbt_project.yml"
+    dbt_test_utils.copy_replace(dbt_project_yaml, os.path.join(test_root_dir, "dbt_project.yml"))
     return test_root_dir
 
 
-def generate_profile_yaml_file(destination_type: DestinationType, test_root_dir: str) -> Dict[str, Any]:
-    """
-    Each destination requires different settings to connect to. This step generates the adequate profiles.yml
-    as described here: https://docs.getdbt.com/reference/profiles.yml
-    """
-    config_generator = TransformConfig()
-    profiles_config = config_generator.read_json_config(f"../secrets/{destination_type.value.lower()}.json")
-    # Adapt credential file to look like destination config.json
-    if destination_type.value == DestinationType.BIGQUERY.value:
-        profiles_config["credentials_json"] = json.dumps(profiles_config)
-        profiles_config["dataset_id"] = target_schema
-    else:
-        profiles_config["schema"] = target_schema
-    profiles_yaml = config_generator.transform(destination_type, profiles_config)
-    config_generator.write_yaml_config(test_root_dir, profiles_yaml)
-    return profiles_config
-
-
-def setup_input_raw_data(integration_type: str, test_resource_name: str, test_root_dir: str, destination_config: Dict[str, Any]) -> bool:
+def setup_input_raw_data(
+    destination_type: DestinationType, test_resource_name: str, test_root_dir: str, destination_config: Dict[str, Any]
+) -> bool:
     """
     We run docker images of destinations to upload test data stored in the messages.txt file for each test case.
     This should populate the associated "raw" tables from which normalization is reading from when running dbt CLI.
     """
     catalog_file = os.path.join("resources", test_resource_name, "data_input", "catalog.json")
     message_file = os.path.join("resources", test_resource_name, "data_input", "messages.txt")
-    copy_replace(
+    dbt_test_utils.copy_replace(
         catalog_file,
         os.path.join(test_root_dir, "reset_catalog.json"),
         pattern='"destination_sync_mode": ".*"',
         replace_value='"destination_sync_mode": "overwrite"',
     )
-    copy_replace(catalog_file, os.path.join(test_root_dir, "destination_catalog.json"))
+    dbt_test_utils.copy_replace(catalog_file, os.path.join(test_root_dir, "destination_catalog.json"))
     config_file = os.path.join(test_root_dir, "destination_config.json")
     with open(config_file, "w") as f:
         f.write(json.dumps(destination_config))
-    commands = [
-        "docker",
-        "run",
-        "--rm",
-        "--init",
-        "-v",
-        f"{test_root_dir}:/data",
-        "--network",
-        "host",
-        "-i",
-        f"airbyte/destination-{integration_type.lower()}:dev",
-        "write",
-        "--config",
-        "/data/destination_config.json",
-        "--catalog",
-    ]
     # Force a reset in destination raw tables
-    assert run_destination_process("", test_root_dir, commands + ["/data/reset_catalog.json"])
+    assert run_destination_process(destination_type, test_root_dir, "", "reset_catalog.json", dbt_test_utils)
     # Run a sync to create raw tables in destinations
-    return run_destination_process(message_file, test_root_dir, commands + ["/data/destination_catalog.json"])
+    return run_destination_process(destination_type, test_root_dir, message_file, "destination_catalog.json", dbt_test_utils)
 
 
-def run_destination_process(message_file: str, test_root_dir: str, commands: List[str]):
-    print("Executing: ", " ".join(commands))
-    with open(os.path.join(test_root_dir, "destination_output.log"), "ab") as f:
-        process = subprocess.Popen(commands, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
-
-        def writer():
-            if os.path.exists(message_file):
-                with open(message_file, "rb") as input_data:
-                    while True:
-                        line = input_data.readline()
-                        if not line:
-                            break
-                        process.stdin.write(line)
-            process.stdin.close()
-
-        thread = threading.Thread(target=writer)
-        thread.start()
-        for line in iter(process.stdout.readline, b""):
-            f.write(line)
-            sys.stdout.write(line.decode("utf-8"))
-        thread.join()
-        process.wait()
-    return process.returncode == 0
+def setup_incremental_data(destination_type: DestinationType, test_resource_name: str, test_root_dir: str) -> bool:
+    message_file = os.path.join("resources", test_resource_name, "data_input", "messages_incremental.txt")
+    # Force a reset in destination raw tables
+    assert run_destination_process(destination_type, test_root_dir, "", "reset_catalog.json", dbt_test_utils)
+    # Run a sync to create raw tables in destinations
+    return run_destination_process(destination_type, test_root_dir, message_file, "destination_catalog.json", dbt_test_utils)
 
 
-def generate_dbt_models(destination_type: DestinationType, test_resource_name: str, test_root_dir: str):
+def setup_schema_change_data(destination_type: DestinationType, test_resource_name: str, test_root_dir: str) -> bool:
+    catalog_file = os.path.join("resources", test_resource_name, "data_input", "catalog_schema_change.json")
+    message_file = os.path.join("resources", test_resource_name, "data_input", "messages_schema_change.txt")
+    dbt_test_utils.copy_replace(
+        catalog_file,
+        os.path.join(test_root_dir, "reset_catalog.json"),
+        pattern='"destination_sync_mode": ".*"',
+        replace_value='"destination_sync_mode": "overwrite"',
+    )
+    dbt_test_utils.copy_replace(catalog_file, os.path.join(test_root_dir, "destination_catalog.json"))
+    dbt_test_utils.copy_replace(
+        os.path.join(test_root_dir, "dbt_project.yml"),
+        os.path.join(test_root_dir, "first_dbt_project.yml"),
+    )
+
+    def update(config_yaml):
+        if config_yaml["model-paths"] == ["models"]:
+            config_yaml["model-paths"] = ["modified_models"]
+            return True, config_yaml
+        return False, None
+
+    dbt_test_utils.update_yaml_file(os.path.join(test_root_dir, "dbt_project.yml"), update)
+    # Run a sync to update raw tables in destinations
+    return run_destination_process(destination_type, test_root_dir, message_file, "destination_catalog.json", dbt_test_utils)
+
+
+def setup_dbt_test(destination_type: DestinationType, test_resource_name: str, test_root_dir: str):
     """
-    This is the normalization step generating dbt models files from the destination_catalog.json taken as input.
+    Prepare the data (copy) for the models for dbt test.
     """
-    catalog_processor = CatalogProcessor(os.path.join(test_root_dir, "models", "generated"), destination_type)
-    catalog_processor.process(os.path.join("resources", test_resource_name, "data_input", "catalog.json"), "_airbyte_data", target_schema)
+    replace_identifiers = os.path.join("resources", test_resource_name, "data_input", "replace_identifiers.json")
+    copy_test_files(
+        os.path.join("resources", test_resource_name, "dbt_test_config", "dbt_schema_tests"),
+        os.path.join(test_root_dir, "models/dbt_schema_tests"),
+        destination_type,
+        replace_identifiers,
+    )
+    copy_test_files(
+        os.path.join("resources", test_resource_name, "dbt_test_config", "dbt_data_tests_tmp"),
+        os.path.join(test_root_dir, "models/dbt_data_tests"),
+        destination_type,
+        replace_identifiers,
+    )
+    copy_test_files(
+        os.path.join("resources", test_resource_name, "dbt_test_config", "dbt_data_tests"),
+        os.path.join(test_root_dir, "tests"),
+        destination_type,
+        replace_identifiers,
+    )
 
 
-def dbt_run(test_root_dir: str):
+def setup_dbt_incremental_test(destination_type: DestinationType, test_resource_name: str, test_root_dir: str):
     """
-    Run the dbt CLI to perform transformations on the test raw data in the destination
+    Prepare the data (copy) for the models for dbt test.
     """
-    # Perform sanity check on dbt project settings
-    assert run_check_dbt_command("debug", test_root_dir)
-    final_sql_files = os.path.join(test_root_dir, "final")
-    shutil.rmtree(final_sql_files, ignore_errors=True)
-    # Compile dbt models files into destination sql dialect, then run the transformation queries
-    dbt_run_succeeded = run_check_dbt_command("run", test_root_dir)
-    # Copy final SQL files to persist them in git
-    # shutil.copytree(os.path.join(test_root_dir, "..", "build", "run", "airbyte_utils", "models", "generated"), final_sql_files)
-    assert dbt_run_succeeded
+    replace_identifiers = os.path.join("resources", test_resource_name, "data_input", "replace_identifiers.json")
+    copy_test_files(
+        os.path.join("resources", test_resource_name, "dbt_test_config", "dbt_schema_tests_incremental"),
+        os.path.join(test_root_dir, "models/dbt_schema_tests"),
+        destination_type,
+        replace_identifiers,
+    )
+    test_directory = os.path.join(test_root_dir, "models/dbt_data_tests")
+    shutil.rmtree(test_directory, ignore_errors=True)
+    os.makedirs(test_directory, exist_ok=True)
+    copy_test_files(
+        os.path.join("resources", test_resource_name, "dbt_test_config", "dbt_data_tests_tmp_incremental"),
+        test_directory,
+        destination_type,
+        replace_identifiers,
+    )
+    test_directory = os.path.join(test_root_dir, "tests")
+    shutil.rmtree(test_directory, ignore_errors=True)
+    os.makedirs(test_directory, exist_ok=True)
+    copy_test_files(
+        os.path.join("resources", test_resource_name, "dbt_test_config", "dbt_data_tests_incremental"),
+        test_directory,
+        destination_type,
+        replace_identifiers,
+    )
 
 
-def dbt_test(destination_type: DestinationType, test_resource_name: str, test_root_dir: str):
+def setup_dbt_schema_change_test(destination_type: DestinationType, test_resource_name: str, test_root_dir: str):
+    """
+    Prepare the data (copy) for the models for dbt test.
+    """
+    replace_identifiers = os.path.join("resources", test_resource_name, "data_input", "replace_identifiers.json")
+    copy_test_files(
+        os.path.join("resources", test_resource_name, "dbt_test_config", "dbt_schema_tests_schema_change"),
+        os.path.join(test_root_dir, "modified_models/dbt_schema_tests"),
+        destination_type,
+        replace_identifiers,
+    )
+    test_directory = os.path.join(test_root_dir, "modified_models/dbt_data_tests")
+    shutil.rmtree(test_directory, ignore_errors=True)
+    os.makedirs(test_directory, exist_ok=True)
+    copy_test_files(
+        os.path.join("resources", test_resource_name, "dbt_test_config", "dbt_data_tests_tmp_schema_change"),
+        test_directory,
+        destination_type,
+        replace_identifiers,
+    )
+    test_directory = os.path.join(test_root_dir, "tests")
+    shutil.rmtree(test_directory, ignore_errors=True)
+    os.makedirs(test_directory, exist_ok=True)
+    copy_test_files(
+        os.path.join("resources", test_resource_name, "dbt_test_config", "dbt_data_tests_schema_change"),
+        test_directory,
+        destination_type,
+        replace_identifiers,
+    )
+
+
+def dbt_test(destination_type: DestinationType, test_root_dir: str):
     """
     dbt provides a way to run dbt tests as described here: https://docs.getdbt.com/docs/building-a-dbt-project/tests
     - Schema tests are added in .yml files from the schema_tests directory
@@ -321,108 +379,8 @@ def dbt_test(destination_type: DestinationType, test_resource_name: str, test_ro
 
     We use this mechanism to verify the output of our integration tests.
     """
-    replace_identifiers = os.path.join("resources", test_resource_name, "data_input", "replace_identifiers.json")
-    copy_test_files(
-        os.path.join("resources", test_resource_name, "dbt_schema_tests"),
-        os.path.join(test_root_dir, "models/dbt_schema_tests"),
-        destination_type,
-        replace_identifiers,
-    )
-    copy_test_files(
-        os.path.join("resources", test_resource_name, "dbt_data_tests"),
-        os.path.join(test_root_dir, "tests"),
-        destination_type,
-        replace_identifiers,
-    )
-    assert run_check_dbt_command("test", test_root_dir)
-
-
-def run_check_dbt_command(command: str, cwd: str) -> bool:
-    """
-    Run dbt subprocess while checking and counting for "ERROR", "FAIL" or "WARNING" printed in its outputs
-    """
-    error_count = 0
-    commands = [
-        "docker",
-        "run",
-        "--rm",
-        "--init",
-        "-v",
-        f"{cwd}:/workspace",
-        "-v",
-        f"{cwd}/build:/build",
-        "-v",
-        f"{cwd}/final:/build/run/airbyte_utils/models/generated",
-        "-v",
-        "/tmp/bq_keyfile.json:/tmp/bq_keyfile.json",
-        "--network",
-        "host",
-        "--entrypoint",
-        "/usr/local/bin/dbt",
-        "-i",
-        "airbyte/normalization:dev",
-        command,
-        "--profiles-dir=/workspace",
-        "--project-dir=/workspace",
-    ]
-    print("Executing: ", " ".join(commands))
-    print(f"Equivalent to: dbt {command} --profiles-dir={cwd} --project-dir={cwd}")
-    with open(os.path.join(cwd, "dbt_output.log"), "ab") as f:
-        process = subprocess.Popen(commands, cwd=cwd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, env=os.environ)
-        for line in iter(process.stdout.readline, b""):
-            f.write(line)
-            str_line = line.decode("utf-8")
-            sys.stdout.write(str_line)
-            if ("ERROR" in str_line or "FAIL" in str_line or "WARNING" in str_line) and "Done." not in str_line and "PASS=" not in str_line:
-                # count lines mentionning ERROR (but ignore the one from dbt run summary)
-                error_count += 1
-    process.wait()
-    print(f"{' '.join(commands)}\n\tterminated with return code {process.returncode} with {error_count} 'ERROR' mention(s).")
-    if error_count > 0:
-        return False
-    return process.returncode == 0
-
-
-def check_outputs(destination_type: DestinationType, test_resource_name: str, test_root_dir: str):
-    """
-    Implement other types of checks on the output directory (grepping, diffing files etc?)
-    """
-    print("Checking test outputs")
-
-
-def copy_replace(src, dst, pattern=None, replace_value=None):
-    """
-    Copies a file from src to dst replacing pattern by replace_value
-    Parameters
-    ----------
-    src : string
-        Path to the source filename to copy from
-    dst : string
-        Path to the output filename to copy to
-    pattern
-        list of Patterns to replace inside the src file
-    replace_value
-        list of Values to replace by in the dst file
-    """
-    file1 = open(src, "r") if isinstance(src, str) else src
-    file2 = open(dst, "w") if isinstance(dst, str) else dst
-    pattern = [pattern] if isinstance(pattern, str) else pattern
-    replace_value = [replace_value] if isinstance(replace_value, str) else replace_value
-    if replace_value and pattern:
-        if len(replace_value) != len(pattern):
-            raise Exception("Invalid parameters: pattern and replace_value" " have different sizes.")
-        rules = [(re.compile(regex, re.IGNORECASE), value) for regex, value in zip(pattern, replace_value)]
-    else:
-        rules = []
-    for line in file1:
-        if rules:
-            for rule in rules:
-                line = re.sub(rule[0], rule[1], line)
-        file2.write(line)
-    if isinstance(src, str):
-        file1.close()
-    if isinstance(dst, str):
-        file2.close()
+    normalization_image: str = dbt_test_utils.get_normalization_image(destination_type)
+    assert dbt_test_utils.run_check_dbt_command(normalization_image, "test", test_root_dir)
 
 
 def copy_test_files(src: str, dst: str, destination_type: DestinationType, replace_identifiers: str):
@@ -446,25 +404,33 @@ def copy_test_files(src: str, dst: str, destination_type: DestinationType, repla
             identifiers_map = json.loads(contents)
             pattern = []
             replace_value = []
+            if dbt_test_utils.target_schema != "test_normalization":
+                pattern.append("test_normalization")
+                if destination_type.value == DestinationType.SNOWFLAKE.value:
+                    replace_value.append(dbt_test_utils.target_schema.upper())
+                else:
+                    replace_value.append(dbt_test_utils.target_schema)
             if destination_type.value in identifiers_map:
                 for entry in identifiers_map[destination_type.value]:
                     for k in entry:
-                        pattern.append(k)
+                        # re.escape() must not be used for the replacement string in sub(), only backslashes should be escaped:
+                        # see https://docs.python.org/3/library/re.html#re.escape
+                        pattern.append(k.replace("\\", r"\\"))
                         replace_value.append(entry[k])
             if pattern and replace_value:
 
                 def copy_replace_identifiers(src, dst):
-                    copy_replace(src, dst, pattern, replace_value)
+                    dbt_test_utils.copy_replace(src, dst, pattern, replace_value)
 
                 shutil.copytree(src, temp_dir + "/replace", copy_function=copy_replace_identifiers)
                 src = temp_dir + "/replace"
         # final copy
-        shutil.copytree(src, dst)
+        copy_tree(src, dst)
 
 
 def copy_upper(src, dst):
     print(src, "->", dst)
-    copy_replace(
+    dbt_test_utils.copy_replace(
         src,
         dst,
         pattern=[
@@ -482,7 +448,7 @@ def copy_upper(src, dst):
 
 def copy_lower(src, dst):
     print(src, "->", dst)
-    copy_replace(
+    dbt_test_utils.copy_replace(
         src,
         dst,
         pattern=[

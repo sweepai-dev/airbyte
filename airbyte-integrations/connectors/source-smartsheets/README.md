@@ -1,6 +1,6 @@
 # Smartsheets Source 
 
-This is the repository for the Smartsheets source connector, written in Python. 
+This is the repository for the Smartsheets source connector, written in Python.
 For information about how to use this connector within Airbyte, see [the documentation](https://docs.airbyte.io/integrations/sources/smartsheets).
 
 ### Author
@@ -20,10 +20,34 @@ Airbyte will ask for this token when you configure the source connector. You wil
 - File
 - Properties
 
+Optionally you can include a list of metadata fields to be ingested by the connector, these fields are optional however the config file does require the metadata_fields be present, see sample_config.json under integrations tests for an example.
+
+| Supported Metadata Fields |
+|------|
+|sheetcreatedAt|
+|sheetid|
+|sheetmodifiedAt|
+|sheetname|
+|sheetpermalink|
+|sheetversion|
+|sheetaccess_level|
+|row_id|
+|row_access_level|
+|row_created_at|
+|row_created_by|
+|row_expanded|
+|row_modified_by|
+|row_parent_id|
+|row_permalink|
+|row_number|
+|row_version|
+
 ## Local development
 
 ### Prerequisites
 **To iterate on this connector, make sure to complete this prerequisites section.**
+
+#### Minimum Python version required `= 3.7.0`
 
 #### Build & Activate Virtual Environment and install dependencies
 From this connector directory, create a virtual environment:

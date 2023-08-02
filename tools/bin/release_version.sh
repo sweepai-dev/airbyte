@@ -4,37 +4,36 @@ set -e
 
 . tools/lib/lib.sh
 
-BRANCH=$(git rev-parse --abbrev-ref HEAD)
-
-if [[ "$BRANCH" == "master" ]]; then
-  echo 'This script should be run from a branch!';
+if [[ -z "${CLOUDREPO_USER}" ]]; then
+  echo 'CLOUDREPO_USER env var not set. Please retrieve the user email from the CloudRepo lastpass secret and run export CLOUDREPO_USER=<user_from_secret>.';
   exit 1;
 fi
 
-PART_TO_BUMP=$1
-[[ -z "$PART_TO_BUMP" ]] && echo "Usage ./tools/bin/release_version.sh (major|minor|patch)" && exit 1
+if [[ -z "${CLOUDREPO_PASSWORD}" ]]; then
+  echo 'CLOUDREPO_PASSWORD env var not set. Please retrieve the user email from the CloudRepo lastpass secret and run export CLOUDREPO_PASSWORD=<password_from_secret>.';
+  exit 1;
+fi
 
-# uses .bumpversion.cfg to find files to bump
-# requires no git diffs to run
-# commits the bumped versions code to your branch
-pip install bumpversion
-bumpversion "$PART_TO_BUMP"
+if [[ -z "${DOCKER_HUB_USERNAME}" ]]; then
+  echo 'DOCKER_HUB_USERNAME not set.';
+  exit 1;
+fi
 
-GIT_REVISION=$(git rev-parse HEAD)
-[[ -z "$GIT_REVISION" ]] && echo "Couldn't get the git revision..." && exit 1
+if [[ -z "${DOCKER_HUB_PASSWORD}" ]]; then
+  echo 'DOCKER_HUB_PASSWORD for docker user not set.';
+  exit 1;
+fi
 
-echo "Building and publishing version $VERSION for git revision $GIT_REVISION..."
+docker login -u "${DOCKER_HUB_USERNAME}" -p "${DOCKER_HUB_PASSWORD}"
 
-ENV_VERSION=$(grep VERSION .env | xargs)
-ENV_VERSION=${ENV_VERSION#*=}
+source ./tools/bin/bump_version.sh
 
-./gradlew clean composeBuild
-VERSION=$ENV_VERSION GIT_REVISION=$GIT_REVISION docker-compose -f docker-compose.build.yaml build
-VERSION=$ENV_VERSION GIT_REVISION=$GIT_REVISION docker-compose -f docker-compose.build.yaml push
-echo "Completed building and publishing..."
+echo "Building and publishing PLATFORM version $NEW_VERSION for git revision $GIT_REVISION..."
+VERSION=$NEW_VERSION SUB_BUILD=PLATFORM ./gradlew clean build --scan
+VERSION=$NEW_VERSION SUB_BUILD=PLATFORM ./gradlew publish --scan
 
-echo "Final Steps:"
-echo "1. Push your changes"
-echo "2. Merge your PR"
-echo "3. Switch to master"
-echo "4. Run ./tools/bin/tag_version.sh"
+# Container should be running before build starts
+# It generates binaries to build images for different CPU architecture
+docker run --rm --privileged multiarch/qemu-user-static --reset -p yes
+VERSION=$NEW_VERSION ./tools/bin/publish_docker.sh
+echo "Completed building and publishing PLATFORM..."

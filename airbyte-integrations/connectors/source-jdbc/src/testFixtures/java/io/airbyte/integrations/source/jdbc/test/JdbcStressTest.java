@@ -1,25 +1,5 @@
 /*
- * MIT License
- *
- * Copyright (c) 2020 Airbyte
- *
- * Permission is hereby granted, free of charge, to any person obtaining a copy
- * of this software and associated documentation files (the "Software"), to deal
- * in the Software without restriction, including without limitation the rights
- * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
- * copies of the Software, and to permit persons to whom the Software is
- * furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice shall be included in all
- * copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
- * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
- * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
- * SOFTWARE.
+ * Copyright (c) 2023 Airbyte, Inc., all rights reserved.
  */
 
 package io.airbyte.integrations.source.jdbc.test;
@@ -29,23 +9,26 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.Lists;
+import edu.umd.cs.findbugs.annotations.SuppressFBWarnings;
 import io.airbyte.commons.json.Jsons;
 import io.airbyte.commons.stream.MoreStreams;
 import io.airbyte.commons.string.Strings;
-import io.airbyte.db.Databases;
+import io.airbyte.db.factory.DataSourceFactory;
+import io.airbyte.db.jdbc.DefaultJdbcDatabase;
 import io.airbyte.db.jdbc.JdbcDatabase;
+import io.airbyte.db.jdbc.JdbcUtils;
 import io.airbyte.integrations.source.jdbc.AbstractJdbcSource;
-import io.airbyte.protocol.models.AirbyteCatalog;
-import io.airbyte.protocol.models.AirbyteMessage;
-import io.airbyte.protocol.models.AirbyteMessage.Type;
-import io.airbyte.protocol.models.AirbyteRecordMessage;
-import io.airbyte.protocol.models.CatalogHelpers;
-import io.airbyte.protocol.models.ConfiguredAirbyteCatalog;
-import io.airbyte.protocol.models.ConfiguredAirbyteStream;
-import io.airbyte.protocol.models.DestinationSyncMode;
 import io.airbyte.protocol.models.Field;
-import io.airbyte.protocol.models.Field.JsonSchemaPrimitive;
-import io.airbyte.protocol.models.SyncMode;
+import io.airbyte.protocol.models.JsonSchemaType;
+import io.airbyte.protocol.models.v0.AirbyteCatalog;
+import io.airbyte.protocol.models.v0.AirbyteMessage;
+import io.airbyte.protocol.models.v0.AirbyteMessage.Type;
+import io.airbyte.protocol.models.v0.AirbyteRecordMessage;
+import io.airbyte.protocol.models.v0.CatalogHelpers;
+import io.airbyte.protocol.models.v0.ConfiguredAirbyteCatalog;
+import io.airbyte.protocol.models.v0.ConfiguredAirbyteStream;
+import io.airbyte.protocol.models.v0.DestinationSyncMode;
+import io.airbyte.protocol.models.v0.SyncMode;
 import java.math.BigDecimal;
 import java.nio.ByteBuffer;
 import java.util.ArrayList;
@@ -64,6 +47,9 @@ import org.slf4j.LoggerFactory;
 // todo (cgardens) - this needs more love and thought. we should be able to test this without having
 // to rewrite so much data. it is enough for now to sanity check that our JdbcSources can actually
 // handle more data than fits in memory.
+@SuppressFBWarnings(
+                    value = {"MS_SHOULD_BE_FINAL"},
+                    justification = "The static variables are updated in sub classes for convenience, and cannot be final.")
 public abstract class JdbcStressTest {
 
   private static final Logger LOGGER = LoggerFactory.getLogger(JdbcStressTest.class);
@@ -81,7 +67,7 @@ public abstract class JdbcStressTest {
 
   private BitSet bitSet;
   private JsonNode config;
-  private AbstractJdbcSource source;
+  private AbstractJdbcSource<?> source;
 
   /**
    * These tests write records without specifying a namespace (schema name). They will be written into
@@ -113,9 +99,9 @@ public abstract class JdbcStressTest {
    *
    * @return source
    */
-  public abstract AbstractJdbcSource getSource();
+  public abstract AbstractJdbcSource<?> getSource();
 
-  protected String createTableQuery(String tableName, String columnClause) {
+  protected String createTableQuery(final String tableName, final String columnClause) {
     return String.format("CREATE TABLE %s(%s)",
         tableName, columnClause);
   }
@@ -128,12 +114,13 @@ public abstract class JdbcStressTest {
     streamName = getDefaultSchemaName().map(val -> val + "." + TABLE_NAME).orElse(TABLE_NAME);
     config = getConfig();
 
-    final JsonNode jdbcConfig = source.toJdbcConfig(config);
-    JdbcDatabase database = Databases.createJdbcDatabase(
-        jdbcConfig.get("username").asText(),
-        jdbcConfig.has("password") ? jdbcConfig.get("password").asText() : null,
-        jdbcConfig.get("jdbc_url").asText(),
-        getDriverClass());
+    final JsonNode jdbcConfig = source.toDatabaseConfig(config);
+    final JdbcDatabase database = new DefaultJdbcDatabase(
+        DataSourceFactory.create(
+            jdbcConfig.get(JdbcUtils.USERNAME_KEY).asText(),
+            jdbcConfig.has(JdbcUtils.PASSWORD_KEY) ? jdbcConfig.get(JdbcUtils.PASSWORD_KEY).asText() : null,
+            getDriverClass(),
+            jdbcConfig.get(JdbcUtils.JDBC_URL_KEY).asText()));
 
     database.execute(connection -> connection.createStatement().execute(
         createTableQuery("id_and_name", String.format("id %s, name VARCHAR(200)", COL_ID_TYPE))));
@@ -144,7 +131,7 @@ public abstract class JdbcStressTest {
         LOGGER.info("writing batch: " + i);
       final List<String> insert = new ArrayList<>();
       for (int j = 0; j < BATCH_SIZE; j++) {
-        int recordNumber = (i * BATCH_SIZE) + j;
+        final int recordNumber = (i * BATCH_SIZE) + j;
         insert.add(String.format(INSERT_STATEMENT, recordNumber, recordNumber));
       }
 
@@ -172,7 +159,7 @@ public abstract class JdbcStressTest {
     runTest(getConfiguredCatalogIncremental(), "incremental");
   }
 
-  private void runTest(ConfiguredAirbyteCatalog configuredCatalog, String testName) throws Exception {
+  private void runTest(final ConfiguredAirbyteCatalog configuredCatalog, final String testName) throws Exception {
     LOGGER.info("running stress test for: " + testName);
     final Iterator<AirbyteMessage> read = source.read(config, configuredCatalog, Jsons.jsonNode(Collections.emptyMap()));
     final long actualCount = MoreStreams.toStream(read)
@@ -193,12 +180,12 @@ public abstract class JdbcStressTest {
   }
 
   // each is roughly 106 bytes.
-  private void assertExpectedMessage(AirbyteMessage actualMessage) {
-    long recordNumber = actualMessage.getRecord().getData().get(COL_ID).asLong();
+  private void assertExpectedMessage(final AirbyteMessage actualMessage) {
+    final long recordNumber = actualMessage.getRecord().getData().get(COL_ID).asLong();
     bitSet.set((int) recordNumber);
     actualMessage.getRecord().setEmittedAt(null);
 
-    Number expectedRecordNumber =
+    final Number expectedRecordNumber =
         getDriverClass().toLowerCase().contains("oracle") ? new BigDecimal(recordNumber)
             : recordNumber;
 
@@ -224,12 +211,12 @@ public abstract class JdbcStressTest {
   private static AirbyteCatalog getCatalog() {
     return new AirbyteCatalog().withStreams(Lists.newArrayList(CatalogHelpers.createAirbyteStream(
         streamName,
-        Field.of(COL_ID, JsonSchemaPrimitive.NUMBER),
-        Field.of(COL_NAME, JsonSchemaPrimitive.STRING))
+        Field.of(COL_ID, JsonSchemaType.NUMBER),
+        Field.of(COL_NAME, JsonSchemaType.STRING))
         .withSupportedSyncModes(Lists.newArrayList(SyncMode.FULL_REFRESH, SyncMode.INCREMENTAL))));
   }
 
-  private String prepareInsertStatement(List<String> inserts) {
+  private String prepareInsertStatement(final List<String> inserts) {
     if (getDriverClass().toLowerCase().contains("oracle")) {
       return String.format("INSERT ALL %s SELECT * FROM dual", Strings.join(inserts, " "));
     }

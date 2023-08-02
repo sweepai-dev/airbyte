@@ -1,32 +1,16 @@
 /*
- * MIT License
- *
- * Copyright (c) 2020 Airbyte
- *
- * Permission is hereby granted, free of charge, to any person obtaining a copy
- * of this software and associated documentation files (the "Software"), to deal
- * in the Software without restriction, including without limitation the rights
- * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
- * copies of the Software, and to permit persons to whom the Software is
- * furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice shall be included in all
- * copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
- * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
- * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
- * SOFTWARE.
+ * Copyright (c) 2023 Airbyte, Inc., all rights reserved.
  */
 
 package io.airbyte.commons.io;
 
 import io.airbyte.commons.concurrency.VoidCallable;
+import io.airbyte.commons.logging.MdcScope;
 import java.io.BufferedReader;
+import java.io.ByteArrayInputStream;
+import java.io.IOException;
 import java.io.InputStream;
+import java.nio.charset.StandardCharsets;
 import java.util.Map;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -38,38 +22,103 @@ import org.slf4j.MDC;
 public class LineGobbler implements VoidCallable {
 
   private final static Logger LOGGER = LoggerFactory.getLogger(LineGobbler.class);
+  private final static String GENERIC = "generic";
 
   public static void gobble(final InputStream is, final Consumer<String> consumer) {
+    gobble(is, consumer, GENERIC, MdcScope.DEFAULT_BUILDER);
+  }
+
+  public static void gobble(final String message, final Consumer<String> consumer) {
+    final InputStream stringAsSteam = new ByteArrayInputStream(message.getBytes(StandardCharsets.UTF_8));
+    gobble(stringAsSteam, consumer);
+  }
+
+  public static void gobble(final String message) {
+    gobble(message, LOGGER::info);
+  }
+
+  /**
+   * Used to emit a visual separator in the user-facing logs indicating a start of a meaningful
+   * temporal activity
+   *
+   * @param message
+   */
+  public static void startSection(final String message) {
+    gobble("\r\n----- START " + message + " -----\r\n\r\n");
+  }
+
+  /**
+   * Used to emit a visual separator in the user-facing logs indicating a end of a meaningful temporal
+   * activity
+   *
+   * @param message
+   */
+  public static void endSection(final String message) {
+    gobble("\r\n----- END " + message + " -----\r\n\r\n");
+  }
+
+  public static void gobble(final InputStream is, final Consumer<String> consumer, final MdcScope.Builder mdcScopeBuilder) {
+    gobble(is, consumer, GENERIC, mdcScopeBuilder);
+  }
+
+  public static void gobble(final InputStream is, final Consumer<String> consumer, final String caller, final MdcScope.Builder mdcScopeBuilder) {
     final ExecutorService executor = Executors.newSingleThreadExecutor();
     final Map<String, String> mdc = MDC.getCopyOfContextMap();
-    executor.submit(new LineGobbler(is, consumer, executor, mdc));
+    final var gobbler = new LineGobbler(is, consumer, executor, mdc, caller, mdcScopeBuilder);
+    executor.submit(gobbler);
   }
 
   private final BufferedReader is;
   private final Consumer<String> consumer;
   private final ExecutorService executor;
   private final Map<String, String> mdc;
+  private final String caller;
+  private final MdcScope.Builder containerLogMdcBuilder;
 
   LineGobbler(final InputStream is,
               final Consumer<String> consumer,
               final ExecutorService executor,
               final Map<String, String> mdc) {
+    this(is, consumer, executor, mdc, GENERIC, MdcScope.DEFAULT_BUILDER);
+  }
+
+  LineGobbler(final InputStream is,
+              final Consumer<String> consumer,
+              final ExecutorService executor,
+              final Map<String, String> mdc,
+              final MdcScope.Builder mdcScopeBuilder) {
+    this(is, consumer, executor, mdc, GENERIC, mdcScopeBuilder);
+  }
+
+  LineGobbler(final InputStream is,
+              final Consumer<String> consumer,
+              final ExecutorService executor,
+              final Map<String, String> mdc,
+              final String caller,
+              final MdcScope.Builder mdcScopeBuilder) {
     this.is = IOs.newBufferedReader(is);
     this.consumer = consumer;
     this.executor = executor;
     this.mdc = mdc;
+    this.caller = caller;
+    this.containerLogMdcBuilder = mdcScopeBuilder;
   }
 
   @Override
   public void voidCall() {
     MDC.setContextMap(mdc);
     try {
-      String line;
-      while ((line = is.readLine()) != null) {
-        consumer.accept(line);
+      String line = is.readLine();
+      while (line != null) {
+        try (final var mdcScope = containerLogMdcBuilder.build()) {
+          consumer.accept(line);
+        }
+        line = is.readLine();
       }
-    } catch (Exception e) {
-      LOGGER.error("Error when reading stream", e);
+    } catch (final IOException i) {
+      LOGGER.warn("{} gobbler IOException: {}. Typically happens when cancelling a job.", caller, i.getMessage());
+    } catch (final Exception e) {
+      LOGGER.error("{} gobbler error when reading stream", caller, e);
     } finally {
       executor.shutdown();
     }

@@ -1,25 +1,5 @@
 /*
- * MIT License
- *
- * Copyright (c) 2020 Airbyte
- *
- * Permission is hereby granted, free of charge, to any person obtaining a copy
- * of this software and associated documentation files (the "Software"), to deal
- * in the Software without restriction, including without limitation the rights
- * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
- * copies of the Software, and to permit persons to whom the Software is
- * furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice shall be included in all
- * copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
- * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
- * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
- * SOFTWARE.
+ * Copyright (c) 2023 Airbyte, Inc., all rights reserved.
  */
 
 package io.airbyte.commons.resources;
@@ -28,7 +8,10 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
 import com.google.common.collect.Sets;
+import io.airbyte.commons.io.IOs;
+import java.io.File;
 import java.io.IOException;
+import java.net.URISyntaxException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
 import java.util.stream.Collectors;
@@ -36,26 +19,47 @@ import org.junit.jupiter.api.Test;
 
 class MoreResourcesTest {
 
+  private static final String CONTENT_1 = "content1\n";
+  private static final String CONTENT_2 = "content2\n";
+  private static final String RESOURCE_TEST = "resource_test";
+
   @Test
   void testResourceRead() throws IOException {
-    assertEquals("content1\n", MoreResources.readResource("resource_test"));
-    assertEquals("content2\n", MoreResources.readResource("subdir/resource_test_sub"));
+    assertEquals(CONTENT_1, MoreResources.readResource(RESOURCE_TEST));
+    assertEquals(CONTENT_2, MoreResources.readResource("subdir/resource_test_sub"));
 
     assertThrows(IllegalArgumentException.class, () -> MoreResources.readResource("invalid"));
   }
 
   @Test
+  void testResourceReadWithClass() throws IOException {
+    assertEquals(CONTENT_1, MoreResources.readResource(MoreResourcesTest.class, RESOURCE_TEST));
+    assertEquals(CONTENT_2, MoreResources.readResource(MoreResourcesTest.class, "subdir/resource_test_sub"));
+
+    assertEquals(CONTENT_1, MoreResources.readResource(MoreResourcesTest.class, "/resource_test"));
+    assertEquals(CONTENT_2, MoreResources.readResource(MoreResourcesTest.class, "/subdir/resource_test_sub"));
+
+    assertThrows(IllegalArgumentException.class, () -> MoreResources.readResource(MoreResourcesTest.class, "invalid"));
+  }
+
+  @Test
+  void testReadResourceAsFile() throws URISyntaxException {
+    final File file = MoreResources.readResourceAsFile(RESOURCE_TEST);
+    assertEquals(CONTENT_1, IOs.readFile(file.toPath()));
+  }
+
+  @Test
   void testReadBytes() throws IOException {
-    assertEquals("content1\n", new String(MoreResources.readBytes("resource_test"), StandardCharsets.UTF_8));
-    assertEquals("content2\n", new String(MoreResources.readBytes("subdir/resource_test_sub"), StandardCharsets.UTF_8));
+    assertEquals(CONTENT_1, new String(MoreResources.readBytes(RESOURCE_TEST), StandardCharsets.UTF_8));
+    assertEquals(CONTENT_2, new String(MoreResources.readBytes("subdir/resource_test_sub"), StandardCharsets.UTF_8));
 
     assertThrows(IllegalArgumentException.class, () -> MoreResources.readBytes("invalid"));
   }
 
   @Test
   void testResourceReadDuplicateName() throws IOException {
-    assertEquals("content1\n", MoreResources.readResource("resource_test_a"));
-    assertEquals("content2\n", MoreResources.readResource("subdir/resource_test_a"));
+    assertEquals(CONTENT_1, MoreResources.readResource("resource_test_a"));
+    assertEquals(CONTENT_2, MoreResources.readResource("subdir/resource_test_a"));
   }
 
   @Test

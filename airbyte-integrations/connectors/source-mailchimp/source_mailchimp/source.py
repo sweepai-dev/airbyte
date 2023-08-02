@@ -1,92 +1,73 @@
 #
-# MIT License
-#
-# Copyright (c) 2020 Airbyte
-#
-# Permission is hereby granted, free of charge, to any person obtaining a copy
-# of this software and associated documentation files (the "Software"), to deal
-# in the Software without restriction, including without limitation the rights
-# to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-# copies of the Software, and to permit persons to whom the Software is
-# furnished to do so, subject to the following conditions:
-#
-# The above copyright notice and this permission notice shall be included in all
-# copies or substantial portions of the Software.
-#
-# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-# IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-# FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-# AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-# LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-# OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-# SOFTWARE.
+# Copyright (c) 2023 Airbyte, Inc., all rights reserved.
 #
 
 
-import json
-from typing import DefaultDict, Dict, Generator
+import base64
+from typing import Any, List, Mapping, Tuple
 
-from airbyte_protocol import (
-    AirbyteCatalog,
-    AirbyteConnectionStatus,
-    AirbyteMessage,
-    ConfiguredAirbyteCatalog,
-    ConfiguredAirbyteStream,
-    Status,
-    SyncMode,
-)
-from base_python import AirbyteLogger, Source
+import requests
+from airbyte_cdk import AirbyteLogger
+from airbyte_cdk.sources import AbstractSource
+from airbyte_cdk.sources.streams import Stream
+from airbyte_cdk.sources.streams.http.auth import TokenAuthenticator
+from requests.auth import AuthBase
 
-from .client import Client
+from .streams import Automations, Campaigns, EmailActivity, Lists, Reports
 
 
-class SourceMailchimp(Source):
-    """
-    Mailchimp API Reference: https://mailchimp.com/developer/api/
-    """
-
-    def check(self, logger: AirbyteLogger, config: json) -> AirbyteConnectionStatus:
-        client = self._client(config)
-        alive, error = client.health_check()
-        if not alive:
-            return AirbyteConnectionStatus(status=Status.FAILED, message=f"{error.title}: {error.detail}")
-
-        return AirbyteConnectionStatus(status=Status.SUCCEEDED)
-
-    def discover(self, logger: AirbyteLogger, config: json) -> AirbyteCatalog:
-        client = self._client(config)
-
-        return AirbyteCatalog(streams=client.get_streams())
-
-    def read(
-        self, logger: AirbyteLogger, config: json, catalog: ConfiguredAirbyteCatalog, state: Dict[str, any]
-    ) -> Generator[AirbyteMessage, None, None]:
-        client = self._client(config)
-
-        logger.info("Starting syncing mailchimp")
-        for configured_stream in catalog.streams:
-            yield from self._read_record(client=client, configured_stream=configured_stream, state=state)
-
-        logger.info("Finished syncing mailchimp")
-
-    def _client(self, config: json):
-        client = Client(username=config["username"], apikey=config["apikey"])
-
-        return client
-
+class MailChimpAuthenticator:
     @staticmethod
-    def _read_record(
-        client: Client, configured_stream: ConfiguredAirbyteStream, state: DefaultDict[str, any]
-    ) -> Generator[AirbyteMessage, None, None]:
-        entity_map = {
-            "Lists": client.lists,
-            "Campaigns": client.campaigns,
-        }
+    def get_server_prefix(access_token: str) -> str:
+        try:
+            response = requests.get(
+                "https://login.mailchimp.com/oauth2/metadata", headers={"Authorization": "OAuth {}".format(access_token)}
+            )
+            return response.json()["dc"]
+        except Exception as e:
+            raise Exception(f"Cannot retrieve server_prefix for you account. \n {repr(e)}")
 
-        stream_name = configured_stream.stream.name
+    def get_auth(self, config: Mapping[str, Any]) -> AuthBase:
+        authorization = config.get("credentials", {})
+        auth_type = authorization.get("auth_type")
+        if auth_type == "apikey" or not authorization:
+            # API keys have the format <key>-<data_center>.
+            # See https://mailchimp.com/developer/marketing/docs/fundamentals/#api-structure
+            apikey = authorization.get("apikey") or config.get("apikey")
+            if not apikey:
+                raise Exception("No apikey in creds")
+            auth_string = f"anystring:{apikey}".encode("utf8")
+            b64_encoded = base64.b64encode(auth_string).decode("utf8")
+            auth = TokenAuthenticator(token=b64_encoded, auth_method="Basic")
+            auth.data_center = apikey.split("-").pop()
 
-        if configured_stream.sync_mode == SyncMode.full_refresh:
-            state.pop(stream_name, None)
+        elif auth_type == "oauth2.0":
+            access_token = authorization["access_token"]
+            auth = TokenAuthenticator(token=access_token, auth_method="Bearer")
+            auth.data_center = self.get_server_prefix(access_token)
 
-        for record in entity_map[stream_name](state=state):
-            yield record
+        else:
+            raise Exception(f"Invalid auth type: {auth_type}")
+
+        return auth
+
+
+class SourceMailchimp(AbstractSource):
+    def check_connection(self, logger: AirbyteLogger, config: Mapping[str, Any]) -> Tuple[bool, Any]:
+        try:
+            authenticator = MailChimpAuthenticator().get_auth(config)
+            requests.get(f"https://{authenticator.data_center}.api.mailchimp.com/3.0/ping", headers=authenticator.get_auth_header())
+            return True, None
+        except Exception as e:
+            return False, repr(e)
+
+    def streams(self, config: Mapping[str, Any]) -> List[Stream]:
+        authenticator = MailChimpAuthenticator().get_auth(config)
+        campaign_id = config.get("campaign_id")
+        return [
+            Lists(authenticator=authenticator),
+            Campaigns(authenticator=authenticator),
+            Automations(authenticator=authenticator),
+            EmailActivity(authenticator=authenticator, campaign_id=campaign_id),
+            Reports(authenticator=authenticator),
+        ]

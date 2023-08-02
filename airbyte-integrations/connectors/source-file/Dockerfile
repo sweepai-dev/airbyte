@@ -1,15 +1,21 @@
-FROM airbyte/integration-base-python:0.1.1
+FROM python:3.9-slim as base
+FROM base as builder
 
-RUN apt-get update && apt-get install -y jq curl bash && rm -rf /var/lib/apt/lists/*
-
-ENV CODE_PATH="source_file"
-ENV AIRBYTE_IMPL_MODULE="source_file"
-ENV AIRBYTE_IMPL_PATH="SourceFile"
-
+RUN apt-get update
 WORKDIR /airbyte/integration_code
-COPY $CODE_PATH ./$CODE_PATH
 COPY setup.py ./
-RUN pip install .
+RUN pip install --prefix=/install .
 
-LABEL io.airbyte.version=0.2.2
+FROM base
+WORKDIR /airbyte/integration_code
+COPY --from=builder /install /usr/local
+
+COPY main.py ./
+COPY source_file ./source_file
+
+
+ENV AIRBYTE_ENTRYPOINT "python /airbyte/integration_code/main.py"
+ENTRYPOINT ["python", "/airbyte/integration_code/main.py"]
+
+LABEL io.airbyte.version=0.3.11
 LABEL io.airbyte.name=airbyte/source-file

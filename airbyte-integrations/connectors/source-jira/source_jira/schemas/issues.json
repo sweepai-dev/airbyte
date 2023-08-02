@@ -18,7 +18,6 @@
     "self": {
       "type": "string",
       "description": "The URL of the issue details.",
-      "format": "uri",
       "readOnly": true
     },
     "key": {
@@ -28,26 +27,19 @@
     },
     "renderedFields": {
       "type": "object",
-      "additionalProperties": {
-        "readOnly": true
-      },
+      "additionalProperties": true,
       "description": "The rendered value of each field present on the issue.",
       "readOnly": true
     },
     "properties": {
       "type": "object",
-      "additionalProperties": {
-        "readOnly": true
-      },
+      "additionalProperties": true,
       "description": "Details of the issue properties identified in the request.",
       "readOnly": true
     },
     "names": {
       "type": "object",
-      "additionalProperties": {
-        "type": "string",
-        "readOnly": true
-      },
+      "additionalProperties": true,
       "description": "The ID and name of each field present on the issue.",
       "readOnly": true
     },
@@ -62,26 +54,23 @@
       "readOnly": true
     },
     "operations": {
+      "type": ["object", "null"],
       "description": "The operations that can be performed on the issue.",
       "readOnly": true
     },
     "editmeta": {
+      "type": ["object", "null"],
       "description": "The metadata for the fields on the issue that can be amended.",
       "readOnly": true
     },
     "changelog": {
+      "type": ["object", "null"],
       "description": "Details of changelogs associated with the issue.",
       "readOnly": true
     },
     "versionedRepresentations": {
       "type": "object",
-      "additionalProperties": {
-        "type": "object",
-        "additionalProperties": {
-          "readOnly": true
-        },
-        "readOnly": true
-      },
+      "additionalProperties": true,
       "description": "The versions of each field on the issue.",
       "readOnly": true
     },
@@ -90,8 +79,42 @@
     },
     "fields": {
       "type": "object",
-      "additionalProperties": {}
+      "properties": {
+        "created": {
+          "type": ["string", "null"],
+          "format": "date-time",
+          "description": "This field is not shown in schema / swagger, but exists in records and we use it as cursor fiekd. Updated may be absent. Added to solve the #4341"
+        },
+        "updated": {
+          "type": ["string", "null"],
+          "format": "date-time",
+          "description": "This field is not shown in schema / swagger, but exists in records and we use it as cursor fiekd. Updated may be absent. Added to solve the #4341"
+        }
+      },
+      "additionalProperties": true
+    },
+    "projectId": {
+      "type": "string",
+      "description": "The ID of the project containing the issue.",
+      "readOnly": true
+    },
+    "projectKey": {
+      "type": "string",
+      "description": "The key of the project containing the issue.",
+      "readOnly": true
+    },
+    "created": {
+      "type": ["string", "null"],
+      "format": "date-time",
+      "description": "This field transformed from fields attr",
+      "readOnly": true
+    },
+    "updated": {
+      "type": ["string", "null"],
+      "format": "date-time",
+      "description": "This field transformed from fields attr",
+      "readOnly": true
     }
   },
-  "additionalProperties": false
+  "additionalProperties": true
 }

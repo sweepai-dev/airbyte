@@ -1,39 +1,37 @@
 #
-# MIT License
-#
-# Copyright (c) 2020 Airbyte
-#
-# Permission is hereby granted, free of charge, to any person obtaining a copy
-# of this software and associated documentation files (the "Software"), to deal
-# in the Software without restriction, including without limitation the rights
-# to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-# copies of the Software, and to permit persons to whom the Software is
-# furnished to do so, subject to the following conditions:
-#
-# The above copyright notice and this permission notice shall be included in all
-# copies or substantial portions of the Software.
-#
-# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-# IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-# FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-# AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-# LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-# OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-# SOFTWARE.
+# Copyright (c) 2023 Airbyte, Inc., all rights reserved.
 #
 
 
 import unittest
 from unittest.mock import Mock, patch
 
-from airbyte_protocol import AirbyteRecordMessage, AirbyteStream, ConfiguredAirbyteCatalog, ConfiguredAirbyteStream, SyncMode
-from airbyte_protocol.models.airbyte_protocol import DestinationSyncMode
-from base_python import AirbyteLogger
-from google_sheets_source.client import GoogleSheetsClient
-from google_sheets_source.helpers import Helpers
-from google_sheets_source.models import CellData, GridData, RowData, Sheet, SheetProperties, Spreadsheet
+from airbyte_cdk.logger import AirbyteLogger
+from airbyte_cdk.models.airbyte_protocol import (
+    AirbyteRecordMessage,
+    AirbyteStream,
+    ConfiguredAirbyteCatalog,
+    ConfiguredAirbyteStream,
+    DestinationSyncMode,
+    SyncMode,
+)
+from source_google_sheets.client import GoogleSheetsClient
+from source_google_sheets.helpers import Helpers
+from source_google_sheets.models import CellData, GridData, RowData, Sheet, SheetProperties, Spreadsheet
 
 logger = AirbyteLogger()
+
+
+def google_sheet_client(row_data, spreadsheet_id, client):
+    fake_response = Spreadsheet(
+        spreadsheetId=spreadsheet_id,
+        sheets=[Sheet(data=[GridData(rowData=row_data)])],
+    )
+    client.get.return_value.execute.return_value = fake_response
+    with patch.object(GoogleSheetsClient, "__init__", lambda s, credentials, scopes: None):
+        sheet_client = GoogleSheetsClient({"fake": "credentials"}, ["auth_scopes"])
+        sheet_client.client = client
+    return sheet_client
 
 
 class TestHelpers(unittest.TestCase):
@@ -49,6 +47,7 @@ class TestHelpers(unittest.TestCase):
                 # For simplicity, the type of every cell is a string
                 "properties": {header: {"type": "string"} for header in header_values},
             },
+            supported_sync_modes=[SyncMode.full_refresh],
         )
 
         actual_stream = Helpers.headers_to_airbyte_stream(logger, sheet_name, header_values)
@@ -79,6 +78,7 @@ class TestHelpers(unittest.TestCase):
                 # For simplicity, the type of every cell is a string
                 "properties": {header: {"type": "string"} for header in expected_stream_header_values},
             },
+            supported_sync_modes=[SyncMode.full_refresh],
         )
 
         actual_stream = Helpers.headers_to_airbyte_stream(logger, sheet_name, header_values)
@@ -96,6 +96,7 @@ class TestHelpers(unittest.TestCase):
                 # For simplicity, the type of every cell is a string
                 "properties": {"h1": {"type": "string"}},
             },
+            supported_sync_modes=[SyncMode.full_refresh],
         )
         actual_stream = Helpers.headers_to_airbyte_stream(logger, sheet_name, header_values)
 
@@ -133,12 +134,12 @@ class TestHelpers(unittest.TestCase):
         catalog = ConfiguredAirbyteCatalog(
             streams=[
                 ConfiguredAirbyteStream(
-                    stream=AirbyteStream(name=sheet1, json_schema=sheet1_schema),
+                    stream=AirbyteStream(name=sheet1, json_schema=sheet1_schema, supported_sync_modes=["full_refresh"]),
                     sync_mode=SyncMode.full_refresh,
                     destination_sync_mode=DestinationSyncMode.overwrite,
                 ),
                 ConfiguredAirbyteStream(
-                    stream=AirbyteStream(name=sheet2, json_schema=sheet2_schema),
+                    stream=AirbyteStream(name=sheet2, json_schema=sheet2_schema, supported_sync_modes=["full_refresh"]),
                     sync_mode=SyncMode.full_refresh,
                     destination_sync_mode=DestinationSyncMode.overwrite,
                 ),
@@ -173,18 +174,20 @@ class TestHelpers(unittest.TestCase):
         spreadsheet_id = "123"
         sheet = "s1"
         expected_first_row = ["1", "2", "3", "4"]
-        fake_response = Spreadsheet(
-            spreadsheetId=spreadsheet_id,
-            sheets=[Sheet(data=[GridData(rowData=[RowData(values=[CellData(formattedValue=v) for v in expected_first_row])])])],
-        )
-
+        row_data = [RowData(values=[CellData(formattedValue=v) for v in expected_first_row])]
         client = Mock()
-        client.get.return_value.execute.return_value = fake_response
-        with patch.object(GoogleSheetsClient, "__init__", lambda s, credentials, scopes: None):
-            sheet_client = GoogleSheetsClient({"fake": "credentials"}, ["auth_scopes"])
-            sheet_client.client = client
+        sheet_client = google_sheet_client(row_data, spreadsheet_id, client)
         actual = Helpers.get_first_row(sheet_client, spreadsheet_id, sheet)
         self.assertEqual(expected_first_row, actual)
+        client.get.assert_called_with(spreadsheetId=spreadsheet_id, includeGridData=True, ranges=f"{sheet}!1:1")
+
+    def test_get_first_row_empty_sheet(self):
+        spreadsheet_id = "123"
+        sheet = "s1"
+        row_data = []
+        client = Mock()
+        sheet_client = google_sheet_client(row_data, spreadsheet_id, client)
+        self.assertEqual(Helpers.get_first_row(sheet_client, spreadsheet_id, sheet), [])
         client.get.assert_called_with(spreadsheetId=spreadsheet_id, includeGridData=True, ranges=f"{sheet}!1:1")
 
     def test_get_sheets_in_spreadsheet(self):
@@ -237,6 +240,27 @@ class TestHelpers(unittest.TestCase):
         expected = {sheet1: {0: "1", 1: "2", 2: "3", 3: "4"}}
 
         self.assertEqual(expected, actual)
+
+    def test_get_spreadsheet_id(self):
+        test_url = "https://docs.google.com/spreadsheets/d/18vWlVH8BfjGegwY_GdV1B_cPP9re66xI8uJK25dtY9Q/edit#gid=1820065035"
+        result = Helpers.get_spreadsheet_id(test_url)
+        self.assertEqual("18vWlVH8BfjGegwY_GdV1B_cPP9re66xI8uJK25dtY9Q", result)
+
+        test_url = "https://docs.google.com/spreadsheets/d/18vWlVH8BfjGa-gwYGdV1BjcPP9re66xI8uJK25dtY9Q/edit"
+        result = Helpers.get_spreadsheet_id(test_url)
+        self.assertEqual("18vWlVH8BfjGa-gwYGdV1BjcPP9re66xI8uJK25dtY9Q", result)
+
+        test_url = "https://docs.google.com/spreadsheets/d/18vWlVH8BfjGegwY_GdV1BjcPP9re_6xI8uJ-25dtY9Q/"
+        result = Helpers.get_spreadsheet_id(test_url)
+        self.assertEqual("18vWlVH8BfjGegwY_GdV1BjcPP9re_6xI8uJ-25dtY9Q", result)
+
+        test_url = "https://docs.google.com/spreadsheets/d/18vWlVH8BfjGegwY_GdV1BjcPP9re_6xI8uJ-25dtY9Q/#"
+        result = Helpers.get_spreadsheet_id(test_url)
+        self.assertEqual("18vWlVH8BfjGegwY_GdV1BjcPP9re_6xI8uJ-25dtY9Q", result)
+
+        test_url = "18vWlVH8BfjGegwY_GdV1BjcPP9re66xI8uJK25dtY9Q"
+        result = Helpers.get_spreadsheet_id(test_url)
+        self.assertEqual("18vWlVH8BfjGegwY_GdV1BjcPP9re66xI8uJK25dtY9Q", result)
 
 
 if __name__ == "__main__":
