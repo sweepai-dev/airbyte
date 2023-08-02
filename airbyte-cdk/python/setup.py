@@ -66,6 +66,7 @@ setup(
     packages=find_packages(exclude=("unit_tests",)),
     install_requires=[
         "backoff",
+        "click",
         "jsonschema==2.6.0",
         "pendulum",
         "pydantic==1.6.2",
