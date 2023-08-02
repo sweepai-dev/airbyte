@@ -47,24 +47,42 @@ class AirbyteEntrypoint(object):
 
     @cli.command(help="outputs the json configuration specification")
     def spec():
-        pass
+        message = AirbyteMessage(type=Type.SPEC, spec=self.source.spec(logger))
+        yield message.json(exclude_unset=True)
 
     @cli.command(help="checks the config can be used to connect")
     @click.option('--config', required=True, type=str, help="path to the json configuration file")
     def check(config):
-        pass
+        raw_config = self.source.read_config(config)
+        config = self.source.configure(raw_config, temp_dir)
+        check_result = self.source.check(logger, config)
+        if check_result.status == Status.SUCCEEDED:
+            logger.info("Check succeeded")
+        else:
+            logger.error("Check failed")
+        output_message = AirbyteMessage(type=Type.CONNECTION_STATUS, connectionStatus=check_result).json(exclude_unset=True)
+        yield output_message
 
     @cli.command(help="outputs a catalog describing the source's schema")
     @click.option('--config', required=True, type=str, help="path to the json configuration file")
     def discover(config):
-        pass
+        raw_config = self.source.read_config(config)
+        config = self.source.configure(raw_config, temp_dir)
+        catalog = self.source.discover(logger, config)
+        yield AirbyteMessage(type=Type.CATALOG, catalog=catalog).json(exclude_unset=True)
 
     @cli.command(help="reads the source and outputs messages to STDOUT")
     @click.option('--config', required=True, type=str, help="path to the json configuration file")
     @click.option('--catalog', required=True, type=str, help="path to the catalog used to determine which data to read")
     @click.option('--state', required=False, type=str, help="path to the json-encoded state file")
     def read(config, catalog, state):
-        pass
+        raw_config = self.source.read_config(config)
+        config = self.source.configure(raw_config, temp_dir)
+        config_catalog = self.source.read_catalog(catalog)
+        state = self.source.read_state(state)
+        generator = self.source.read(logger, config, config_catalog, state)
+        for message in generator:
+            yield message.json(exclude_unset=True)
 
     def parse_args(self, args: List[str]):
         return cli(args)
