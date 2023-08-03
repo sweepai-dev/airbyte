@@ -52,6 +52,7 @@ setup(
     install_requires=[
         "airbyte-protocol-models==0.4.0",
         "backoff",
+        "click~=8.0.3",
         "dpath~=2.0.1",
         "isodate~=0.6.1",
         "jsonschema~=3.2.0",
