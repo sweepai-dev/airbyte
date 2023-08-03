@@ -2,7 +2,7 @@
 # Copyright (c) 2023 Airbyte, Inc., all rights reserved.
 #
 
-import argparse
+import click
 import importlib
 import ipaddress
 import logging
@@ -44,10 +44,34 @@ class AirbyteEntrypoint(object):
         self.source = source
         self.logger = logging.getLogger(f"airbyte.{getattr(source, 'name', '')}")
 
-    @staticmethod
-    def parse_args(args: List[str]) -> argparse.Namespace:
-        # set up parent parsers
-        parent_parser = argparse.ArgumentParser(add_help=False)
+    @click.group()
+    def cli():
+        pass
+
+    @cli.command()
+    @click.option('--debug', is_flag=True, help='enables detailed debug logs related to the sync')
+    def spec():
+        pass
+
+    @cli.command()
+    @click.option('--debug', is_flag=True, help='enables detailed debug logs related to the sync')
+    @click.option('--config', required=True, help='path to the json configuration file')
+    def check():
+        pass
+
+    @cli.command()
+    @click.option('--debug', is_flag=True, help='enables detailed debug logs related to the sync')
+    @click.option('--config', required=True, help='path to the json configuration file')
+    def discover():
+        pass
+
+    @cli.command()
+    @click.option('--debug', is_flag=True, help='enables detailed debug logs related to the sync')
+    @click.option('--config', required=True, help='path to the json configuration file')
+    @click.option('--catalog', required=True, help='path to the catalog used to determine which data to read')
+    @click.option('--state', required=False, help='path to the json-encoded state file')
+    def read():
+        pass
         parent_parser.add_argument("--debug", action="store_true", help="enables detailed debug logs related to the sync")
         main_parser = argparse.ArgumentParser()
         subparsers = main_parser.add_subparsers(title="commands", dest="command")
@@ -79,12 +103,13 @@ class AirbyteEntrypoint(object):
 
         return main_parser.parse_args(args)
 
-    def run(self, parsed_args: argparse.Namespace) -> Iterable[str]:
-        cmd = parsed_args.command
+    @cli.resultcallback()
+    def run(ctx, debug, config, catalog=None, state=None):
+        cmd = ctx.invoked_subcommand
         if not cmd:
             raise Exception("No command passed")
 
-        if hasattr(parsed_args, "debug") and parsed_args.debug:
+        if debug:
             self.logger.setLevel(logging.DEBUG)
             self.logger.debug("Debug logs enabled")
         else:
@@ -101,18 +126,18 @@ class AirbyteEntrypoint(object):
                     yield self.airbyte_message_to_string(message)
                 else:
                     raw_config = self.source.read_config(parsed_args.config)
-                    config = self.source.configure(raw_config, temp_dir)
-
-                    if cmd == "check":
-                        yield from map(AirbyteEntrypoint.airbyte_message_to_string, self.check(source_spec, config))
-                    elif cmd == "discover":
-                        yield from map(AirbyteEntrypoint.airbyte_message_to_string, self.discover(source_spec, config))
-                    elif cmd == "read":
-                        config_catalog = self.source.read_catalog(parsed_args.catalog)
-                        state = self.source.read_state(parsed_args.state)
-
-                        yield from map(AirbyteEntrypoint.airbyte_message_to_string, self.read(source_spec, config, config_catalog, state))
-                    else:
+        raw_config = self.source.read_config(config)
+        ...
+        if cmd == "check":
+            ...
+        elif cmd == "discover":
+            ...
+        elif cmd == "read":
+            config_catalog = self.source.read_catalog(catalog)
+            state = self.source.read_state(state)
+            ...
+        else:
+            ...
                         raise Exception("Unexpected command " + cmd)
         finally:
             yield from [self.airbyte_message_to_string(queued_message) for queued_message in self._emit_queued_messages(self.source)]
