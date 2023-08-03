@@ -106,8 +106,8 @@ def test_airbyte_entrypoint_init(mocker):
 )
 def test_parse_valid_args(cmd: str, args: Mapping[str, Any], expected_args, entrypoint: AirbyteEntrypoint):
     arglist = _as_arglist(cmd, args)
-    parsed_args = entrypoint.parse_args(arglist)
-    assert vars(parsed_args) == expected_args
+    parsed_args = entrypoint.cli.make_context(cmd, arglist)
+    assert parsed_args.params == expected_args
 
 
 @pytest.mark.parametrize(
@@ -123,8 +123,8 @@ def test_parse_missing_required_args(cmd: str, args: MutableMapping[str, Any], e
     for required_arg in required_args[cmd]:
         argcopy = deepcopy(args)
         del argcopy[required_arg]
-        with pytest.raises(BaseException):
-            entrypoint.parse_args(_as_arglist(cmd, argcopy))
+        with pytest.raises(click.MissingParameter):
+            entrypoint.cli.make_context(cmd, _as_arglist(cmd, argcopy))
 
 
 def _wrap_message(submessage: Union[AirbyteConnectionStatus, ConnectorSpecification, AirbyteRecordMessage, AirbyteCatalog]) -> str:
@@ -143,7 +143,7 @@ def _wrap_message(submessage: Union[AirbyteConnectionStatus, ConnectorSpecificat
 
 
 def test_run_spec(entrypoint: AirbyteEntrypoint, mocker):
-    parsed_args = Namespace(command="spec")
+    ctx = entrypoint.cli.make_context("spec", [])
     expected = ConnectorSpecification(connectionSpecification={"hi": "hi"})
     mocker.patch.object(MockSource, "spec", return_value=expected)
 
@@ -194,7 +194,7 @@ def test_config_validate(entrypoint: AirbyteEntrypoint, mocker, config_mock, sch
 
 
 def test_run_check(entrypoint: AirbyteEntrypoint, mocker, spec_mock, config_mock):
-    parsed_args = Namespace(command="check", config="config_path")
+    ctx = entrypoint.cli.make_context("check", ["--config", "config_path"])
     check_value = AirbyteConnectionStatus(status=Status.SUCCEEDED)
     mocker.patch.object(MockSource, "check", return_value=check_value)
 
@@ -214,7 +214,7 @@ def test_run_check_with_exception(entrypoint: AirbyteEntrypoint, mocker, spec_mo
 
 
 def test_run_discover(entrypoint: AirbyteEntrypoint, mocker, spec_mock, config_mock):
-    parsed_args = Namespace(command="discover", config="config_path")
+    ctx = entrypoint.cli.make_context("discover", ["--config", "config_path"])
     expected = AirbyteCatalog(streams=[AirbyteStream(name="stream", json_schema={"k": "v"}, supported_sync_modes=[SyncMode.full_refresh])])
     mocker.patch.object(MockSource, "discover", return_value=expected)
 
@@ -234,7 +234,7 @@ def test_run_discover_with_exception(entrypoint: AirbyteEntrypoint, mocker, spec
 
 
 def test_run_read(entrypoint: AirbyteEntrypoint, mocker, spec_mock, config_mock):
-    parsed_args = Namespace(command="read", config="config_path", state="statepath", catalog="catalogpath")
+    ctx = entrypoint.cli.make_context("read", ["--config", "config_path", "--state", "statepath", "--catalog", "catalogpath"])
     expected = AirbyteRecordMessage(stream="stream", data={"data": "stuff"}, emitted_at=1)
     mocker.patch.object(MockSource, "read_state", return_value={})
     mocker.patch.object(MockSource, "read_catalog", return_value={})
