@@ -44,8 +44,36 @@ class AirbyteEntrypoint(object):
         self.source = source
         self.logger = logging.getLogger(f"airbyte.{getattr(source, 'name', '')}")
 
-    @staticmethod
-    def parse_args(args: List[str]) -> argparse.Namespace:
+    @click.group()
+    def cli():
+        pass
+
+    @cli.command()
+    @click.option('--debug', is_flag=True, help='enables detailed debug logs related to the sync')
+    def spec(debug):
+        return {'command': 'spec', 'debug': debug}
+
+    @cli.command()
+    @click.option('--debug', is_flag=True, help='enables detailed debug logs related to the sync')
+    @click.option('--config', required=True, help='path to the json configuration file')
+    def check(debug, config):
+        return {'command': 'check', 'debug': debug, 'config': config}
+
+    @cli.command()
+    @click.option('--debug', is_flag=True, help='enables detailed debug logs related to the sync')
+    @click.option('--config', required=True, help='path to the json configuration file')
+    def discover(debug, config):
+        return {'command': 'discover', 'debug': debug, 'config': config}
+
+    @cli.command()
+    @click.option('--debug', is_flag=True, help='enables detailed debug logs related to the sync')
+    @click.option('--config', required=True, help='path to the json configuration file')
+    @click.option('--catalog', required=True, help='path to the catalog used to determine which data to read')
+    @click.option('--state', required=False, help='path to the json-encoded state file')
+    def read(debug, config, catalog, state):
+        return {'command': 'read', 'debug': debug, 'config': config, 'catalog': catalog, 'state': state}
+
+    def run(self, parsed_args: dict) -> Iterable[str]:
         # set up parent parsers
         parent_parser = argparse.ArgumentParser(add_help=False)
         parent_parser.add_argument("--debug", action="store_true", help="enables detailed debug logs related to the sync")
@@ -77,11 +105,7 @@ class AirbyteEntrypoint(object):
             "--catalog", type=str, required=True, help="path to the catalog used to determine which data to read"
         )
 
-        return main_parser.parse_args(args)
-
-    def run(self, parsed_args: argparse.Namespace) -> Iterable[str]:
-        cmd = parsed_args.command
-        if not cmd:
+        yield from [self.airbyte_message_to_string(queued_message) for queued_message in self._emit_queued_messages(self.source)]
             raise Exception("No command passed")
 
         if hasattr(parsed_args, "debug") and parsed_args.debug:
